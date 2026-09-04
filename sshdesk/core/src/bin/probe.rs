@@ -511,10 +511,22 @@ fn probe_shell(h: &mut Host) {
         }
         Err(e) => bad!("list_ports: {e}"),
     }
-    // The escape hatch still has to survive content that looks like framing.
-    match h.run("printf '__SD_OUT_99__\\nreal\\n'") {
-        Ok(o) if o.stdout.contains("real") => ok!("shell lane still works for arbitrary commands"),
-        Ok(o) => bad!("shell lane desynced on marker-like content: {:?}", o.stdout),
+    // Framing is in-band, so output has to survive looking like a marker and
+    // having no trailing newline. Both of these were real failures.
+    match h.run("printf '__SD_OUT_99__\\n__SD_END_1__\\n0\\nreal\\n'") {
+        Ok(o) if o.stdout.contains("real") && o.code == 0 =>
+            ok!("marker-shaped content cannot end a frame or forge an exit code"),
+        Ok(o) => bad!("frame ended early on marker-like content: {:?}", o.stdout),
+        Err(e) => bad!("shell: {e}"),
+    }
+    match h.run("printf '403'") {
+        Ok(o) if o.stdout == "403" => ok!("output with no trailing newline is exact"),
+        Ok(o) => bad!("marker glued to unterminated output: {:?}", o.stdout),
+        Err(e) => bad!("shell: {e}"),
+    }
+    match h.run("printf 'a\\nb\\n'") {
+        Ok(o) if o.stdout == "a\nb\n" => ok!("a trailing newline is preserved exactly"),
+        Ok(o) => bad!("trailing newline altered: {:?}", o.stdout),
         Err(e) => bad!("shell: {e}"),
     }
 }

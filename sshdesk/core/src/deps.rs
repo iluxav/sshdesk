@@ -53,6 +53,12 @@ pub enum Requirement {
         bin: String,
         #[serde(default = "one")]
         strip_components: u32,
+        /// `uname -m` -> whatever the publisher calls that architecture.
+        /// Projects rarely agree: aarch64 ships as "arm64", x86_64 as "x64".
+        /// The checksums stay keyed by `uname -m`, which is the only name the
+        /// remote actually reports.
+        #[serde(default)]
+        arch_map: BTreeMap<String, String>,
     },
 }
 
@@ -200,8 +206,8 @@ pub fn install(h: &mut Host, req: &Requirement, password: &str) -> Result<String
                 .ok_or_else(|| Error::Io(format!("no package declared for {backend}")))?;
             crate::packagekit::install(h, name, password)
         }
-        Requirement::Archive { url, sha256, into, bin, strip_components, .. } =>
-            install_archive(h, url, sha256, into, bin, *strip_components),
+        Requirement::Archive { url, sha256, into, bin, strip_components, arch_map, .. } =>
+            install_archive(h, url, sha256, into, bin, *strip_components, arch_map),
     }
 }
 
@@ -218,10 +224,12 @@ fn install_archive(
     into: &str,
     bin: &str,
     strip: u32,
+    arch_map: &BTreeMap<String, String>,
 ) -> Result<String> {
     if !sane_dirname(into) { return Err(Error::Io(format!("unsafe install directory: {into}"))) }
     let arch = arch(h)?;
-    let url = url.replace("${arch}", &arch);
+    let url_arch = arch_map.get(&arch).cloned().unwrap_or_else(|| arch.clone());
+    let url = url.replace("${arch}", &url_arch);
     if !sane_url(&url) { return Err(Error::Io(format!("refusing to fetch: {url}"))) }
     let want = sha256.get(&arch)
         .ok_or_else(|| Error::Io(format!("no checksum published for {arch}")))?;

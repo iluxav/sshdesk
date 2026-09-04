@@ -12,6 +12,7 @@ fn req(sha: &str) -> deps::Requirement {
         into: "ripgrep-test".into(),
         bin: "rg".into(),
         strip_components: 1,
+        arch_map: BTreeMap::new(),
     }
 }
 

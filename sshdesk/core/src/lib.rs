@@ -118,14 +118,25 @@ impl Host {
     /// by definition.
     fn run_raw(&mut self, cmd: &str) -> Result<Output> {
         self.seq += 1;
-        let m_out = format!("__SD_OUT_{}__", self.seq);
-        let m_err = format!("__SD_ERR_{}__", self.seq);
-        let m_end = format!("__SD_END_{}__", self.seq);
+        // Unguessable, not sequential. Markers are in-band, so predictable ones
+        // can be produced by the output itself: `cat` a file containing the
+        // next marker and the parser ends the frame early, believing a forged
+        // exit code. A nonce makes that a guessing game nobody wins.
+        let n = nonce();
+        let m_out = format!("__SD_OUT_{n}__");
+        let m_err = format!("__SD_ERR_{n}__");
+        let m_end = format!("__SD_END_{n}__");
 
         // stderr is buffered to a var so we can frame it distinctly from stdout.
+        // The lone `printf` is load-bearing: a command whose output has no
+        // trailing newline — `curl -w '%{{http_code}}'`, `printf`, `echo -n` —
+        // would otherwise share its last line with the marker, and the marker
+        // would not be recognised. Exactly one newline is injected here and
+        // exactly one is removed below, so output is unchanged either way.
         let script = format!(
             "{{ __sd_err=$( {{ {cmd} ; }} 2>&1 1>&3 3>&- ); }} 3>&1\n\
              __sd_rc=$?\n\
+             printf '\\n'\n\
              echo '{m_err}'\n\
              printf '%s\\n' \"$__sd_err\"\n\
              echo '{m_end}'\n\
@@ -159,6 +170,10 @@ impl Host {
                 _ => { code_buf.push_str(t); }
             }
         }
+
+        // Remove the newline the script injected — always exactly one, whether
+        // the command ended with one or not.
+        if stdout_buf.ends_with('\n') { stdout_buf.pop(); }
 
         Ok(Output {
             stdout: stdout_buf,
@@ -319,6 +334,21 @@ impl Drop for Host {
     fn drop(&mut self) {
         let _ = self.shell.kill();
     }
+}
+
+/// Random hex for frame markers. Read from the OS rather than derived from a
+/// counter or the clock, both of which a remote could predict.
+fn nonce() -> String {
+    use std::io::Read;
+    let mut b = [0u8; 12];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_err() {
+        // Weaker, but only reachable if /dev/urandom is gone, and still not a
+        // plain counter.
+        let t = now_nanos().to_le_bytes();
+        let n = b.len();
+        b.copy_from_slice(&t[..n]);
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn control_path(target: &str) -> String {

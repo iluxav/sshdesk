@@ -1,0 +1,19 @@
+.vsc-boot {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; gap: 12px; padding: 24px;
+  background: var(--color-desk-panel); color: var(--color-desk-fg);
+}
+.vsc-status { font-size: 12px; color: var(--color-desk-dim); }
+.vsc-err { max-width: 560px; font-size: 12px; }
+.vsc-err > p { color: var(--color-desk-bad); margin-bottom: 8px; word-break: break-word; }
+.vsc-log {
+  max-height: 220px; overflow: auto; padding: 8px; margin-bottom: 8px;
+  background: var(--color-desk-bg); border: 1px solid var(--color-desk-line);
+  border-radius: 6px; font-size: 11px; white-space: pre-wrap;
+  color: var(--color-desk-dim);
+}
+.vsc-btn {
+  padding: 4px 10px; font-size: 12px; border-radius: 6px;
+  border: 1px solid var(--color-desk-line); color: var(--color-desk-fg);
+}
+.vsc-btn:hover { background: rgb(255 255 255 / .06); }
