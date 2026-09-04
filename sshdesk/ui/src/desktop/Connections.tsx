@@ -29,7 +29,15 @@ export function Connections({ onConnected, connected = [], onCancel }: {
     setBusy(target); setErr('')
     try {
       await fw.host.connect(target, password || undefined)
-      fw.conns.remember(user, host)      // host + user only, never the password
+      // Ask the machine what it calls itself, so the next visit shows a name
+      // rather than an address. Best effort: a box without hostname1 is still
+      // perfectly usable, it just stays known by its address.
+      const name = await fw.for(target).dbus
+        .get('org.freedesktop.hostname1', '/org/freedesktop/hostname1',
+             'org.freedesktop.hostname1', 'Hostname')
+        .then(v => (typeof v === 'string' && v ? v : undefined))
+        .catch(() => undefined)
+      fw.conns.remember(user, host, name)   // host, user and name — never the password
       setSaved(fw.conns.list())
       onConnected(target)
     } catch (e) {
@@ -76,14 +84,36 @@ export function Connections({ onConnected, connected = [], onCancel }: {
                 { label: 'Forget this connection', icon: '🗑', danger: true,
                   onSelect: () => { fw.conns.forget(c.user, c.host); setSaved(fw.conns.list()) } },
               ])}
-              className="w-44 p-3 rounded-xl text-left border border-white/10
+              className="group w-44 p-3 rounded-xl text-left border border-white/10
                          bg-white/[0.04] hover:bg-white/[0.08] backdrop-blur-xl
                          transition disabled:opacity-40"
             >
-              <div className="w-9 h-9 rounded-lg grid place-items-center text-lg
-                              bg-desk-accent/15 border border-desk-accent/25 mb-2">🖥</div>
-              <div className="text-sm font-medium truncate">{c.host}</div>
-              <div className="text-[11px] text-desk-dim truncate">{c.user}</div>
+              <div className="flex items-start">
+                <div className="w-9 h-9 rounded-lg grid place-items-center text-lg
+                                bg-desk-accent/15 border border-desk-accent/25 mb-2">🖥</div>
+                {/* Visible, not only in a context menu — removing a machine you
+                    no longer have should not be something you discover.
+                    Hidden while connected: the card is disabled then, so the
+                    control would look live and do nothing. */}
+                {!already && <span
+                  role="button"
+                  tabIndex={0}
+                  title={`Forget ${c.name || c.host}`}
+                  onPointerDown={ev => { ev.stopPropagation(); ev.preventDefault() }}
+                  onClick={ev => {
+                    ev.stopPropagation()
+                    fw.conns.forget(c.user, c.host)
+                    setSaved(fw.conns.list())
+                  }}
+                  className="ml-auto -mr-1 -mt-1 w-6 h-6 grid place-items-center rounded
+                             text-desk-dim opacity-0 group-hover:opacity-100
+                             hover:bg-desk-bad/20 hover:text-desk-bad transition"
+                >×</span>}
+              </div>
+              <div className="text-sm font-medium truncate">{c.name || c.host}</div>
+              <div className="text-[11px] text-desk-dim truncate">
+                {c.user}{c.name ? ` · ${c.host}` : ''}
+              </div>
               <div className="text-[10px] text-desk-dim mt-1">
                 {already ? 'connected'
                   : busy === target ? 'connecting…'

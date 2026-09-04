@@ -292,11 +292,14 @@ function makeApi(getHost: () => string) {
       return (fw.prefs.get<SavedConn[]>('connections', []))
         .slice().sort((a, b) => b.lastUsed - a.lastUsed)
     },
-    remember(user: string, host: string) {
+    remember(user: string, host: string, name?: string) {
       const all = fw.prefs.get<SavedConn[]>('connections', [])
-        .filter(c => !(c.user === user && c.host === host))
-      all.push({ user, host, lastUsed: Date.now() })
-      fw.prefs.set('connections', all)
+      const prev = all.find(c => c.user === user && c.host === host)
+      const rest = all.filter(c => !(c.user === user && c.host === host))
+      // Keep the last known name if this connection did not learn one, so a
+      // machine does not lose its name because hostname1 was slow once.
+      rest.push({ user, host, lastUsed: Date.now(), name: name ?? prev?.name })
+      fw.prefs.set('connections', rest)
     },
     forget(user: string, host: string) {
       fw.prefs.set('connections', fw.prefs.get<SavedConn[]>('connections', [])

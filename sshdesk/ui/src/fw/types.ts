@@ -44,4 +44,15 @@ export interface Snapshot {
 export interface ServerTime { epoch: number; offset_minutes: number; zone: string }
 
 /** A remembered connection. Passwords are deliberately never stored. */
-export interface SavedConn { host: string; user: string; lastUsed: number }
+export interface SavedConn {
+  host: string
+  user: string
+  lastUsed: number
+  /**
+   * What the machine calls itself, remembered from the last connection.
+   *
+   * Only knowable by connecting, so it is absent until you have been there
+   * once — and the address is shown either way.
+   */
+  name?: string
+}
