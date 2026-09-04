@@ -193,6 +193,15 @@ function makeApi(getHost: () => string) {
     unforward: (remotePort: number) =>
       invoke<void>('cancel_forward', { target: getHost(), remotePort }),
     forwards:  () => invoke<Record<number, number>>('list_forwards', { target: getHost() }),
+    /**
+     * Expose a remote unix socket on a local TCP port. Preferable to a port
+     * forward when the service can bind a socket: file permissions keep
+     * everything else on the remote out, and there is no port to find.
+     */
+    forwardSocket: (remotePath: string, localPort?: number) =>
+      invoke<number>('forward_socket', { target: getHost(), remotePath, localPort }),
+    unforwardSocket: (remotePath: string) =>
+      invoke<void>('cancel_forward_socket', { target: getHost(), remotePath }),
     openUrl:   (url: string) => invoke<void>('open_url', { url }),
   },
 

@@ -216,6 +216,19 @@ impl Host {
         self.mux(&["-O", "forward", "-L", &format!("{local}:localhost:{remote}")])
     }
 
+    /// Expose a remote *unix socket* on a local TCP port.
+    ///
+    /// Better than forwarding a TCP port when the service can bind a socket: a
+    /// socket has file permissions, so nothing else on the remote can reach it,
+    /// and there is no port there for anyone to find.
+    pub fn forward_socket(&self, local: u16, remote_path: &str) -> Result<()> {
+        self.mux(&["-O", "forward", "-L", &format!("127.0.0.1:{local}:{remote_path}")])
+    }
+
+    pub fn cancel_forward_socket(&self, local: u16, remote_path: &str) -> Result<()> {
+        self.mux(&["-O", "cancel", "-L", &format!("127.0.0.1:{local}:{remote_path}")])
+    }
+
     pub fn cancel_forward(&self, local: u16, remote: u16) -> Result<()> {
         self.mux(&["-O", "cancel", "-L", &format!("{local}:localhost:{remote}")])
     }

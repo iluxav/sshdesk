@@ -3,6 +3,7 @@ import { useWM, nextId } from '../wm/store'
 import { Window } from '../wm/Window'
 import { HostScope } from '../wm/host'
 import { Requires } from '../wm/Requires'
+import { AppBoundary } from '../wm/AppBoundary'
 import { declareCoreTokens } from './tokens'
 import { onTokensChanged, setConfig } from '../fw/tokens'
 import { loadIconPacks } from '../fw/icons'
@@ -179,6 +180,7 @@ export function Desktop() {
                 return (
                   <Window key={w.id} win={w}>
                     <HostScope host={w.host}>
+                      <AppBoundary name={app.title}>
                       <Requires requires={app.requires} name={app.title}>
                         <C
                           winId={w.id}
@@ -187,6 +189,7 @@ export function Desktop() {
                           {...(w.props ?? {})}
                         />
                       </Requires>
+                      </AppBoundary>
                     </HostScope>
                   </Window>
                 )

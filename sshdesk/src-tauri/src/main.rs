@@ -713,6 +713,51 @@ fn forward_port(
     Ok(local)
 }
 
+/// Forward a remote unix socket onto a local TCP port.
+///
+/// A service that can bind a socket instead of a port is safer to expose this
+/// way: the socket carries file permissions, so no other user on the remote
+/// can reach it, and there is no listening port there at all.
+#[tauri::command]
+fn forward_socket(
+    hosts: State<Hosts>,
+    fwds: State<Forwards>,
+    target: String,
+    remote_path: String,
+    local_port: Option<u16>,
+) -> Result<u16, String> {
+    let key = format!("{target}:sock:{remote_path}");
+    if let Some(p) = fwds.0.lock().map_err(|e| e.to_string())?.get(&key) {
+        return Ok(*p)
+    }
+    let local = free_port(local_port.unwrap_or(0));
+    if local == 0 { return Err("no free local port".into()) }
+    let map = hosts.0.lock().map_err(|e| e.to_string())?;
+    let h = map.get(&target).ok_or("not connected")?;
+    h.forward_socket(local, &remote_path).map_err(|e| e.to_string())?;
+    fwds.0.lock().map_err(|e| e.to_string())?.insert(key, local);
+    Ok(local)
+}
+
+#[tauri::command]
+fn cancel_forward_socket(
+    hosts: State<Hosts>,
+    fwds: State<Forwards>,
+    target: String,
+    remote_path: String,
+) -> Result<(), String> {
+    let key = format!("{target}:sock:{remote_path}");
+    let local = match fwds.0.lock().map_err(|e| e.to_string())?.remove(&key) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    let map = hosts.0.lock().map_err(|e| e.to_string())?;
+    if let Some(h) = map.get(&target) {
+        h.cancel_forward_socket(local, &remote_path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn cancel_forward(
     hosts: State<Hosts>,
@@ -799,7 +844,8 @@ fn main() {
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,
-            forward_port, cancel_forward, list_forwards, open_url
+            forward_port, cancel_forward, list_forwards, open_url,
+            forward_socket, cancel_forward_socket
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

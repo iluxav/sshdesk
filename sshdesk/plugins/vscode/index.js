@@ -46,54 +46,67 @@ export const manifest = {
 const OPT = '$HOME/.sshdesk/opt'
 const LOG = `${OPT}/openvscode.log`
 const PID = `${OPT}/openvscode.pid`
-
-/** Pull the port and token out of the line the server prints on startup. */
-function parseUrl(text) {
-  const m = /http:\/\/localhost:(\d+)\??tkn=([0-9a-f]+)/.exec(text || '')
-  return m ? { port: Number(m[1]), token: m[2] } : null
-}
+const SOCK = `${OPT}/openvscode.sock`
+/** The literal path, for the forward — the shell expands $HOME, we cannot. */
+const SOCK_MARK = 'SOCKET='
 
 export function createAdapter(sdk) {
-  // Started with nohup and a pidfile so it outlives the command that launched
-  // it — the persistent shell is for request/response, and a server is not
-  // that. Re-running is idempotent: an already-live server is reused rather
-  // than a second one started beside it.
+  // A unix socket rather than a TCP port, and no connection token.
+  //
+  // That combination sounds worse and is better. The token is delivered as a
+  // SameSite=Lax cookie via a redirect, which a cross-origin iframe never gets
+  // to keep — the app is tauri://localhost and the server is 127.0.0.1, so the
+  // cookie is third-party and WKWebView drops it. The frame just 403s.
+  //
+  // Binding a socket removes the reason the token existed. There is no TCP
+  // port on the remote for anyone to reach, and umask 077 means no other user
+  // can open the socket either. What reaches the Mac is one loopback port,
+  // which is exactly what every other forward here already is.
   const START = `
     set -e
+    umask 077
     D="${OPT}/openvscode-server"
-    if [ -f "${PID}" ] && kill -0 "$(cat "${PID}" 2>/dev/null)" 2>/dev/null; then
-      grep -o 'http://localhost:[0-9]*?tkn=[0-9a-f]*' "${LOG}" | tail -1
+    if [ -f "${PID}" ] && kill -0 "$(cat "${PID}" 2>/dev/null)" 2>/dev/null && [ -S "${SOCK}" ]; then
+      # Adopting an existing server inherits whatever permissions it was
+      # started with, which may predate this. Re-assert them.
+      chmod 700 "${SOCK}" 2>/dev/null || true
+      echo "${SOCK_MARK}${SOCK}"
       exit 0
     fi
-    TOK=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \\n')
-    rm -f "${LOG}"
+    rm -f "${LOG}" "${SOCK}"
     nohup "$D/bin/openvscode-server" \
-      --host 127.0.0.1 --port 0 --connection-token "$TOK" \
+      --socket-path "${SOCK}" --without-connection-token \
       --server-data-dir "${OPT}/openvscode-data" \
       --telemetry-level off --accept-server-license-terms \
       > "${LOG}" 2>&1 &
     echo $! > "${PID}"
     for _ in $(seq 1 80); do
-      grep -q 'available at' "${LOG}" 2>/dev/null && break
+      [ -S "${SOCK}" ] && break
       sleep 0.25
     done
-    grep -o 'http://localhost:[0-9]*?tkn=[0-9a-f]*' "${LOG}" | tail -1
+    [ -S "${SOCK}" ] || { echo "the server did not create its socket" >&2; exit 1; }
+    # Explicit, not left to umask: this is what replaces the connection token,
+    # so it should not depend on how the process happened to be started.
+    chmod 700 "${SOCK}"
+    echo "${SOCK_MARK}${SOCK}"
   `
 
   const STOP = `
     if [ -f "${PID}" ]; then kill "$(cat "${PID}")" 2>/dev/null || true; rm -f "${PID}"; fi
+    rm -f "${SOCK}"
   `
 
   return {
-    /** Start (or adopt) the server and return where it is listening. */
+    /** Start (or adopt) the server; returns the socket path it listens on. */
     async start() {
       const r = await sdk.exec(['sh', '-c', START])
-      const found = parseUrl(r.stdout)
-      if (!found) {
+      const line = (r.stdout || '').split('\n').map(s => s.trim())
+        .find(s => s.startsWith(SOCK_MARK))
+      if (!line) {
         const why = (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join('\n')
-        throw new Error(why || 'the server did not report a URL')
+        throw new Error(why || 'the server did not report a socket')
       }
-      return found
+      return line.slice(SOCK_MARK.length)
     },
 
     async stop() {
@@ -116,22 +129,22 @@ export function createApp({ React, html, api, fw }) {
     const [err, setErr] = useState('')
     const [log, setLog] = useState('')
     const [status, setStatus] = useState('starting the server…')
-    const remotePort = useRef(0)
+    const socket = useRef('')
 
     useEffect(() => { setTitle && setTitle('VS Code') }, [setTitle])
 
     const boot = useCallback(async () => {
       setErr(''); setLog(''); setUrl(''); setStatus('starting the server…')
       try {
-        const { port, token } = await api.start()
-        remotePort.current = port
-        setStatus('forwarding the port…')
-        // Same primitive as everything else: added to the connection that is
-        // already open, so there is no reconnect and no second authentication.
-        const local = await fw.net.forward(port)
-        // 127.0.0.1 is a trustworthy origin, so an http iframe inside the app
-        // is not blocked as mixed content the way any other host would be.
-        setUrl(`http://127.0.0.1:${local}/?tkn=${token}`)
+        const path = await api.start()
+        socket.current = path
+        setStatus('forwarding the socket…')
+        // Added to the connection that is already open, so no reconnect and no
+        // second authentication — the same primitive as every other forward.
+        const local = await fw.net.forwardSocket(path)
+        // 127.0.0.1 counts as a trustworthy origin, so an http iframe inside
+        // the app is not blocked as mixed content the way any other host is.
+        setUrl(`http://127.0.0.1:${local}/`)
         setStatus('')
       } catch (e) {
         setErr(String(e))
@@ -144,8 +157,8 @@ export function createApp({ React, html, api, fw }) {
 
     const restart = async () => {
       try { await api.stop() } catch { /* it may already be gone */ }
-      if (remotePort.current) {
-        try { await fw.net.unforward(remotePort.current) } catch { /* ditto */ }
+      if (socket.current) {
+        try { await fw.net.unforwardSocket(socket.current) } catch { /* ditto */ }
       }
       boot()
     }
