@@ -1,5 +1,8 @@
 import type { DirListing, FileRead, SavedConn, ServerTime, Snapshot } from './types'
 export * from './types'
+export * from './tokens'
+export { loadIconPacks, iconPacks, hasIcon } from './icons'
+export { applyTheme } from './theme'
 
 const invoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
   (window as any).__TAURI__.core.invoke(cmd, args)
@@ -174,6 +177,22 @@ function makeApi(getHost: () => string) {
     resize: (id: string, cols: number, rows: number) =>
       invoke<void>('term_resize', { id, cols, rows }),
     close:  (id: string) => invoke<void>('term_close', { id }),
+  },
+
+  /**
+   * Layered configuration. Defaults live in app declarations; this reads and
+   * writes the two persisted layers.
+   */
+  config: {
+    /** Both layers for a host, or just the local one when not connected. */
+    load: (target?: string) =>
+      invoke<{ local: Record<string, string>; host: Record<string, string>; warnings: string[] }>(
+        'config_load', { target }),
+    /** Write one key. Passing no value removes it, falling back to the layer below. */
+    set: (scope: 'local' | 'host', key: string, value?: string, target?: string) =>
+      invoke<void>('config_set', { scope, target, key, value }),
+    /** Where the file lives, so it can be opened in the Editor. */
+    path: (scope: 'local' | 'host') => invoke<string>('config_path', { scope }),
   },
 
   sys: {

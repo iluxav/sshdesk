@@ -11,6 +11,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub mod config;
+pub mod icons;
 pub mod dbus;
 pub mod sftp;
 

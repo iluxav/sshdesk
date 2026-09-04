@@ -28,10 +28,19 @@ identity changes.
 
 ```js
 export const manifest = {
-  id: 'ports',                    // unique; also the app id
+  id: 'ports',                    // unique; also the app id and token namespace
   name: 'Ports',                  // dock label and window title
-  icon: '🔌',                     // emoji
+  icon: '🔌',                     // fallback glyph, before icon packs load
   window: { w: 940, h: 520 },     // optional initial size
+
+  // Tokens you own. Settings renders an editor for these with no code written
+  // for your plugin, and users change them in one place for every app.
+  tokens: {
+    app:      { type: 'icon',  default: 'desk:network', label: 'App icon' },
+    listening:{ type: 'icon',  default: 'desk:service', label: 'Listening port' },
+    // '@' inherits from another token: retint the desktop and this follows.
+    mine:     { type: 'color', default: '@desk.ok',     label: 'My port' },
+  },
 }
 
 export function createAdapter(sdk) { ... }   // JSON -> CLI -> JSON. Optional.
@@ -101,6 +110,38 @@ command. Validate anything that came from the machine before passing it back:
 const UNIT = /^[A-Za-z0-9@._:-]+$/
 if (!UNIT.test(name)) throw new Error(`refusing suspicious unit: ${name}`)
 ```
+
+### Tokens: icons and colours
+
+Read a token with `sdk.token(id)`; draw an icon with the platform's `Icon`.
+The namespace is your plugin's id, so `ports.listening` is yours and
+`files.directory` is the file manager's.
+
+```js
+// your own token
+html`<${ctx.Icon} token="ports.listening" />`
+
+// deliberately the same icon Files uses, so the two stay consistent
+html`<${ctx.Icon} token="files.file" />`
+```
+
+Config lives in two layers — the user's Mac and, scoped to its own windows,
+each host:
+
+```toml
+[icons]
+"ports.listening" = "desk:network"
+
+[theme]
+"ports.mine" = "#4ade80"
+```
+
+An icon value is either `pack:name` or a plain glyph, so `"🔌"` stays valid and
+you can adopt tokens one at a time rather than converting everything at once.
+
+Colour tokens become CSS variables scoped to your windows — `ports.mine` is
+`var(--ports-mine)` inside `.app-ports` — so plain CSS in your `style.css`
+picks them up.
 
 ### If you are on tier 3, three things worth doing
 

@@ -265,6 +265,74 @@ fn upload_files(
     })
 }
 
+// ---- configuration ------------------------------------------------------
+
+/// Both remote-capable config layers. Defaults are not included: they are
+/// declared by app manifests in the frontend, and duplicating that registry
+/// here would buy nothing.
+#[tauri::command]
+fn config_load(hosts: State<Hosts>, target: Option<String>)
+    -> Result<sshdesk_core::config::Layers, String> {
+    match target {
+        None => Ok(sshdesk_core::config::load(None)),
+        Some(t) => {
+            let mut map = hosts.0.lock().map_err(|e| e.to_string())?;
+            // Not being connected is normal, not an error — the local layer is
+            // still perfectly readable.
+            Ok(sshdesk_core::config::load(map.get_mut(&t)))
+        }
+    }
+}
+
+/// Write one key. Validation lives here rather than in the UI so a hand-edited
+/// file and the Settings app get identical treatment.
+#[tauri::command]
+fn config_set(
+    hosts: State<Hosts>,
+    scope: String,
+    target: Option<String>,
+    key: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    if let Some(v) = &value {
+        sshdesk_core::config::validate(&key, v)?;
+    }
+    match scope.as_str() {
+        "local" => {
+            let mut warnings = Vec::new();
+            let mut flat = sshdesk_core::config::read_local(&mut warnings);
+            match value { Some(v) => flat.insert(key, v), None => flat.remove(&key) };
+            sshdesk_core::config::write_local(&flat).map_err(|e| e.to_string())
+        }
+        "host" => {
+            let t = target.ok_or("host scope needs a target")?;
+            with_host(&hosts, &t, |h| {
+                let mut warnings = Vec::new();
+                let mut flat = sshdesk_core::config::read_host(h, &mut warnings);
+                match value { Some(v) => flat.insert(key, v), None => flat.remove(&key) };
+                sshdesk_core::config::write_host(h, &flat)
+            })
+        }
+        other => Err(format!("unknown scope: {other}")),
+    }
+}
+
+/// Where the file lives, so the UI can offer to open it in the Editor.
+#[tauri::command]
+fn config_path(scope: String) -> Result<String, String> {
+    match scope.as_str() {
+        "local" => Ok(sshdesk_core::config::local_path().to_string_lossy().to_string()),
+        "host" => Ok(format!("~/{}", sshdesk_core::config::HOST_PATH)),
+        other => Err(format!("unknown scope: {other}")),
+    }
+}
+
+/// Every installed icon pack, sanitised and ready to inject as a sprite.
+#[tauri::command]
+fn icon_packs() -> Vec<sshdesk_core::icons::Pack> {
+    sshdesk_core::icons::load()
+}
+
 /// Arbitrary D-Bus call — the platform primitive plugins build on.
 ///
 /// `signature` describes the argument types exactly as `busctl call` requires;
@@ -640,6 +708,7 @@ fn main() {
             connect, clock, disconnect, snapshot, service_action, kill_process,
             systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
             watch_units, stage_for_drag, upload_files,
+            config_load, config_set, config_path, icon_packs,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,

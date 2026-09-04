@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Icon } from '../wm/Icon'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { type DirListing, type Entry } from '../fw'
 import { useFw } from '../wm/host'
@@ -479,12 +480,19 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
                             ${drag?.over?.id === dropId
                                 && drag.over.arg === fw.path.join(cwd, e.name)
                               ? 'bg-desk-accent/50 ring-1 ring-inset ring-desk-accent'
-                              : isSel ? 'bg-desk-accent/30' : 'hover:bg-white/5'}`}
+                              : isSel ? 'bg-desk-accent/30' : 'hover:bg-[var(--files-row-hover)]'}`}
               >
-                <span className="w-5 shrink-0 opacity-80">
-                  {e.kind === 'dir' ? '📁' : e.kind === 'link' ? '🔗' : '📄'}
+                <span className="w-5 shrink-0 flex items-center opacity-90">
+                  <Icon
+                    token={e.kind === 'dir' ? 'files.directory'
+                         : e.kind === 'link' ? 'files.link' : 'files.file'}
+                    host={fw.host.current()} size={15} />
                 </span>
-                <span className={`flex-1 truncate ${e.kind === 'dir' ? 'text-desk-accent' : ''}`}>
+                {/* Colour comes from a token that defaults to @desk.accent, so
+                    retinting the desktop moves folder names with it — and
+                    pointing it at a literal breaks the link deliberately. */}
+                <span className="flex-1 truncate"
+                      style={e.kind === 'dir' ? { color: 'var(--files-dir-fg)' } : undefined}>
                   {e.name}
                 </span>
                 <span className="w-20 text-right text-desk-dim font-mono">
