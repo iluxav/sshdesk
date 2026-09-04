@@ -24,6 +24,9 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
   const root = useRef<HTMLDivElement>(null)
   /** Last drop diagnostics, surfaced in the status bar when a drop misses. */
   const [dropDebug, setDropDebug] = useState('')
+  /** Files already downloaded and ready to hand to the OS, keyed by selection. */
+  const staged = useRef<{ key: string; paths: string[] } | null>(null)
+  const [dragReady, setDragReady] = useState(false)
 
   // Pinned to this window's machine, not whichever host is focused.
   const fw = useFw()
@@ -219,6 +222,39 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
   }
 
   const selected = useMemo(() => entries.filter(e => sel.has(e.name)), [entries, sel])
+
+  /**
+   * Pre-stage the selection while Option is held.
+   *
+   * macOS only tracks a drag while the button is really down, so downloading
+   * inside the gesture meant the drag was already over by the time the files
+   * existed — which looked exactly like the feature not working. Holding
+   * Option is a clear statement of intent and happens before the mouse goes
+   * down, so it is the right moment to fetch.
+   */
+  useEffect(() => {
+    const names = selected.map(x => x.name)
+    const key = cwd + '\u0000' + names.join('\u0000')
+
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Alt' || !names.length) return
+      if (staged.current?.key === key) { setDragReady(true); return }
+      setDragReady(false)
+      setNote(`preparing ${names.length === 1 ? names[0] : names.length + ' items'}\u2026`)
+      fw.fs.stage(names.map(n => fw.path.join(cwd, n)))
+        .then(paths => {
+          staged.current = { key, paths }
+          setDragReady(true)
+          setNote('ready \u2014 drag to Finder')
+        })
+        .catch(e => { setNote(''); setErr(String(e)) })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selected, cwd, fw])
+
+  // A different selection invalidates what was staged.
+  useEffect(() => { setDragReady(false) }, [selected, cwd])
   const one = selected.length === 1 ? selected[0] : null
 
   const removeList = async (list: Entry[]) => {
@@ -446,11 +482,27 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
                   // be made before the drag starts rather than when it ends.
                   if (ev.altKey) {
                     ev.preventDefault()
-                    const paths = list.map(x => fw.path.join(cwd, x.name))
-                    setNote(`preparing ${paths.length === 1 ? list[0].name : paths.length + ' items'}\u2026`)
-                    fw.fs.dragOut(paths)
-                      .then(() => setNote('dragged to Finder'))
-                      .catch(er => setErr(String(er)))
+                    const key = cwd + '\u0000' + list.map(x => x.name).join('\u0000')
+                    const s = staged.current
+                    if (s && s.key === key) {
+                      // Nothing awaited before this call: the button is still
+                      // down, which is the only condition under which macOS
+                      // will pick the drag up.
+                      fw.fs.beginDrag(s.paths).catch(er => setErr(String(er)))
+                    } else {
+                      // Option was pressed after the mouse, so nothing is ready
+                      // yet. Fetch now and say so rather than starting a drag
+                      // that cannot work.
+                      const paths = list.map(x => fw.path.join(cwd, x.name))
+                      setNote('preparing\u2026')
+                      fw.fs.stage(paths)
+                        .then(p => {
+                          staged.current = { key, paths: p }
+                          setDragReady(true)
+                          setNote('ready \u2014 drag again with \u2325 held')
+                        })
+                        .catch(er => { setNote(''); setErr(String(er)) })
+                    }
                     return
                   }
                   startDrag(ev, {
@@ -513,8 +565,12 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
         {note && <span className="text-desk-ok">· {note}</span>}
         {dropDebug && <span className="text-desk-dim" title={dropDebug}>· drop missed</span>}
         {sel.size > 0 && !note && (
-          <span title="Hold Option while dragging to copy the files to Finder">
-            · ⌥drag → Finder
+          <span
+            className={dragReady ? 'text-desk-ok' : undefined}
+            title={dragReady
+              ? 'Files are downloaded and ready — drag them to Finder now'
+              : 'Hold Option to prepare these files, then drag them to Finder'}>
+            · {dragReady ? '⌥ ready → drag to Finder' : 'hold ⌥ to drag → Finder'}
           </span>
         )}
 

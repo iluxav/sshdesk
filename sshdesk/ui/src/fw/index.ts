@@ -88,25 +88,37 @@ function makeApi(getHost: () => string) {
     caps:     () => invoke<string[]>('sftp_extensions', t()),
 
     /**
-     * Hand remote files to the OS as a native drag, so they can be dropped in
-     * Finder or any other app.
+     * Download files into a local staging directory so the OS can drag them.
      *
-     * macOS wants real paths, not a promise it can redeem later, so the files
-     * are downloaded to a staging directory first and the drag begins once
-     * they land. Small files feel instant; a large one is a visible wait, and
-     * that is inherent to this approach rather than a bug.
+     * Deliberately separate from `beginDrag`. macOS will only track a drag
+     * while the mouse button is genuinely down, so an SFTP round trip cannot
+     * sit inside the gesture — by the time it returned, the drag was over and
+     * nothing happened. Stage first, drag second.
      */
-    dragOut: async (paths: string[]) => {
-      const staged = await invoke<string[]>('stage_for_drag', { ...t(), paths })
-      const { Channel } = await import('@tauri-apps/api/core')
-      const onEvent = new Channel<{ result: string }>()
-      await invoke('plugin:drag|start_drag', {
-        item: staged,
+    stage: (paths: string[]) => invoke<string[]>('stage_for_drag', { ...t(), paths }),
+
+    /**
+     * Hand already-staged local files to the OS as a native drag.
+     *
+     * Synchronous up to the invoke on purpose: no dynamic import, no await
+     * before the call, because every deferred tick is a chance for the mouse
+     * button to come up first. Channel comes off the global Tauri object,
+     * which `withGlobalTauri` puts there.
+     */
+    beginDrag: (localPaths: string[]) => {
+      const core = (window as any).__TAURI__?.core
+      if (!core?.Channel) {
+        // Would otherwise throw synchronously, before any .catch is attached,
+        // and surface as an unhandled error instead of a message.
+        return Promise.reject(new Error('drag unavailable: Tauri core.Channel missing'))
+      }
+      if (!localPaths.length) return Promise.reject(new Error('nothing staged to drag'))
+      return core.invoke('plugin:drag|start_drag', {
+        item: localPaths,
         image: DRAG_ICON,
         options: { mode: 'copy' },
-        onEvent,
-      })
-      return staged
+        onEvent: new core.Channel(),
+      }) as Promise<void>
     },
 
     /** Upload files dropped from Finder into a remote directory. */
