@@ -23,6 +23,11 @@ fn main() {
         std::process::exit(2);
     });
 
+    // `--watch` is a diagnostic: subscribe and print signals as they arrive, so
+    // you can tell "nothing is changing on the box" apart from "the push path
+    // is broken". Those look identical from inside the UI.
+    let watch = std::env::args().any(|a| a == "--watch");
+
     println!("\n\x1b[1msshdesk probe → {target}\x1b[0m");
     let t0 = Instant::now();
     let mut h = match Host::connect(&target) {
@@ -30,6 +35,11 @@ fn main() {
         Err(e) => { eprintln!("connect failed: {e}"); std::process::exit(1) }
     };
     ok!("connected in {:.0} ms, remote uid {}", t0.elapsed().as_secs_f64() * 1000.0, h.uid());
+
+    if watch {
+        watch_mode(&mut h);
+        return
+    }
 
     section("SFTP — the file lane");
     let tmp = probe_sftp(&mut h);
@@ -59,6 +69,48 @@ fn main() {
 }
 
 fn section(name: &str) { println!("\n\x1b[1m{name}\x1b[0m"); }
+
+/// Live signal monitor. Ctrl-C to stop.
+fn watch_mode(h: &mut Host) {
+    let (sock, uid) = match h.bus() {
+        Ok(_) => (h.bus_path().to_string(), h.uid()),
+        Err(e) => { eprintln!("bus: {e}"); return }
+    };
+    let mut d = match dbus::Dbus::connect(&sock, uid) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("watcher: {e}"); return }
+    };
+    if let Err(e) = subscribe_units(&mut d) { eprintln!("subscribe: {e}"); return }
+
+    println!("\nwatching {} — systemd will push here when a unit changes.", h.target());
+    println!("try, on the remote:  systemctl restart <something>");
+    println!("or unprivileged:     systemctl show --property=Id <an-unloaded>.service\n");
+
+    let start = Instant::now();
+    let mut n = 0u32;
+    loop {
+        match d.next_signal(Duration::from_secs(5)) {
+            Ok(Some(sig)) => {
+                n += 1;
+                let args: Vec<String> = sig.args.iter()
+                    .map(|a| a.as_str().map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("{:?}", a.to_json())))
+                    .collect();
+                println!("  \x1b[32m{:>7.1}s\x1b[0m {}.{}  {}",
+                    start.elapsed().as_secs_f64(), sig.interface, sig.member, args.join(" "));
+            }
+            Ok(None) => {
+                if n == 0 && start.elapsed() > Duration::from_secs(15) {
+                    println!("  \x1b[33m{:>7.1}s\x1b[0m ...nothing yet. An idle box emits nothing —",
+                        start.elapsed().as_secs_f64());
+                    println!("           that is correct behaviour, not a broken watcher.");
+                    n = 1; // only say it once
+                }
+            }
+            Err(e) => { eprintln!("stopped: {e}"); return }
+        }
+    }
+}
 
 fn probe_sftp(h: &mut Host) -> Option<String> {
     let exts = match h.sftp() { Ok(s) => s.extensions(), Err(e) => { bad!("open: {e}"); return None } };

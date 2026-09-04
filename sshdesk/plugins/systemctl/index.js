@@ -117,6 +117,10 @@ export function createApp({ React, html, api, fw }) {
     const [detail, setDetail] = useState('')
     const [err, setErr] = useState('')
     const [busy, setBusy] = useState(false)
+    // Push activity, so "working but quiet" is distinguishable from "broken".
+    const [live, setLive] = useState(false)
+    const [pushes, setPushes] = useState(0)
+    const [lastPush, setLastPush] = useState(0)
 
     const load = useCallback(async () => {
       setBusy(true); setErr('')
@@ -130,12 +134,53 @@ export function createApp({ React, html, api, fw }) {
     // Push, not poll. The backend holds one D-Bus subscription per host and
     // systemd tells us when a job finishes — so starting a service in a
     // terminal updates this list too, with no timer and no round trips.
+    //
+    // Two things this has to get right that are easy to miss:
+    //
+    // 1. Signals arrive in bursts. A single ssh login emits UnitNew +
+    //    JobRemoved + UnitRemoved for its session scope. Reloading per signal
+    //    would mean four full ListUnits calls for one uninteresting event, so
+    //    they are coalesced.
+    // 2. A refresh that returns identical data is invisible. Without some
+    //    indicator, a working push looks exactly like a broken one — which is
+    //    precisely how this felt the first time it ran.
     useEffect(() => {
-      let live = true
-      fw.sys.watchUnits().catch(() => { /* older backend: stay manual */ })
-      const off = fw.bus.on('units:changed', () => { if (live) load() })
-      return () => { live = false; off() }
+      let mounted = true
+      let timer = null
+
+      fw.sys.watchUnits()
+        .then(() => { if (mounted) setLive(true) })
+        .catch(() => { /* older backend: stay manual */ })
+
+      // JobRemoved carries the unit at args[2]; UnitNew/UnitRemoved at args[0].
+      const unitOf = p =>
+        p && (p.member === 'JobRemoved' ? p.args?.[2] : p.args?.[0])
+
+      const off = fw.bus.on('units:changed', payload => {
+        if (!mounted) return
+        setPushes(n => n + 1)
+        setLastPush(Date.now())
+
+        // Every ssh login churns a session-N.scope. Counting it as activity is
+        // honest; refetching 193 units because of it is not.
+        const unit = String(unitOf(payload) ?? '')
+        if (!unit.endsWith('.service')) return
+
+        clearTimeout(timer)
+        timer = setTimeout(() => { if (mounted) load() }, 250)
+      })
+      const offStop = fw.bus.on('units:stopped', () => { if (mounted) setLive(false) })
+
+      return () => { mounted = false; clearTimeout(timer); off(); offStop() }
     }, [load])
+
+    // Re-render the "Ns ago" label without re-fetching anything.
+    const [, tick] = useState(0)
+    useEffect(() => {
+      if (!lastPush) return
+      const t = setInterval(() => tick(n => n + 1), 1000)
+      return () => clearInterval(t)
+    }, [lastPush])
     useEffect(() => { setTitle && setTitle('Services') }, [setTitle])
 
     const rows = useMemo(() => {
@@ -229,6 +274,15 @@ export function createApp({ React, html, api, fw }) {
 
         <div class="px-3 py-1.5 text-[11px] text-desk-dim border-t border-desk-line shrink-0">
           ${rows.length} of ${units.length} services${sel ? ' \u00B7 ' + sel.unit : ''}${busy ? ' \u00B7 working\u2026' : ''}
+          ${live && html`<span class="sc-live" title=${
+            pushes
+              ? `${pushes} push(es) from systemd; last ${Math.round((Date.now() - lastPush) / 1000)}s ago`
+              : 'subscribed to systemd — nothing has changed on this host yet'
+          }> \u00B7 <span class="sc-dot"></span> live${
+            pushes ? ` \u00B7 ${pushes} push${pushes === 1 ? '' : 'es'}` : ''
+          }${
+            lastPush ? ` \u00B7 ${Math.round((Date.now() - lastPush) / 1000)}s ago` : ''
+          }</span>`}
         </div>
       </div>`
   }

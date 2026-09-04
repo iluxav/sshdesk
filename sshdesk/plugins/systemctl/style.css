@@ -48,3 +48,13 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
+
+/* Push-activity indicator. A subscription that is working but quiet looks
+   identical to one that is broken, so make the difference visible. */
+.sc-live { color: var(--color-desk-dim); }
+.sc-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--color-desk-ok); vertical-align: middle;
+  animation: sc-pulse 2s ease-in-out infinite;
+}
+@keyframes sc-pulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
