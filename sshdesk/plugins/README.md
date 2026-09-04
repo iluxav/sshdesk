@@ -43,29 +43,53 @@ console error; the rest of the desktop still boots.
 
 ---
 
-## `createAdapter(sdk)` — the CLI boundary
+## `createAdapter(sdk)` — the machine boundary
 
 Return an object of async functions. This is the only place that talks to the
-remote machine, and the only place that parses command output.
+remote machine.
+
+### Three tiers, and you should always take the highest one available
+
+Linux desktops do not shell out. They call typed IPC — D-Bus for system
+services, the kernel's own interfaces for state. `systemctl` is *itself* a
+D-Bus client; `ss` queries netlink. Parsing their output means asking a CLI to
+render a typed API into text so you can turn it back into data, and that text
+is the part that changes between distro releases.
+
+So the sdk gives you three tiers. The tier tells you what reliability you get.
+
+**Tier 1 — a real protocol exists. No parsing, ever.**
+
+| | |
+|---|---|
+| `sdk.fs.list(path)` | Directory entries with typed attrs — size, mtime, mode, user, group |
+| `sdk.fs.read / write / mkdir / rename / copy / remove` | SFTP. `copy` is server-side where the host supports it |
+| `sdk.fs.disk(path)` | `{ total, free, avail }` as numbers |
+| `sdk.fs.caps()` | Which SFTP extensions this server offers |
+| `sdk.dbus.systemd(member, sig?, args?)` | Call the systemd manager |
+| `sdk.dbus.call(dest, path, iface, member, sig?, args?)` | Any bus service |
+| `sdk.dbus.get(dest, path, iface, prop)` | One property, typed |
 
 ```js
-export function createAdapter(sdk) {
-  return {
-    async list() {
-      const r = await sdk.exec(['ss', '-ltnpH'])
-      if (r.code !== 0) throw new Error(r.stderr || 'ss failed')
-      return parse(r.stdout)          // parsing is your code, not a DSL
-    },
-  }
-}
+// every unit on the box, typed, no parser, no process spawned on the remote
+const [units] = await sdk.dbus.systemd('ListUnits')
+const failed = units.filter(u => u[3] === 'failed')
 ```
 
-### The sdk
+`signature` describes argument types exactly as `busctl call` does — `'ss'` is
+two strings — because JSON cannot tell a byte from a uint32.
+
+**Tier 2 — no protocol, but a stable kernel ABI.** Process listing and
+listening ports have no bus service. `snapshot()` reads `/proc` and `ss` for
+you; both are far steadier than `ps` output formatting.
+
+**Tier 3 — the escape hatch.** For docker, nginx, your own daemons: anything
+without a schema.
 
 | | |
 |---|---|
 | `sdk.exec(argv)` | Run on the connected host. Returns `{ stdout, stderr, code, elapsed_ms }` |
-| `sdk.sudo(argv)` | Same, escalated. sshdesk prompts once per host per session and caches in memory only |
+| `sdk.sudo(argv)` | Same, escalated. Prompts once per host per session, cached in memory only |
 | `sdk.capability(name, probe)` | Run `probe(exec)` once per host and cache the boolean |
 | `sdk.host()` | Current `user@host` |
 
@@ -74,23 +98,18 @@ separately, so a value can never widen into extra arguments or a second
 command. Validate anything that came from the machine before passing it back:
 
 ```js
-const UNIT = /^[A-Za-z0-9@._:\\-]+$/
+const UNIT = /^[A-Za-z0-9@._:-]+$/
 if (!UNIT.test(name)) throw new Error(`refusing suspicious unit: ${name}`)
 ```
 
-### Three things worth doing
+### If you are on tier 3, three things worth doing
 
 **Probe capabilities, don't assume.** The same command differs across distros.
+(On tier 1 you don't need this — D-Bus is introspectable and `sdk.fs.caps()`
+tells you what the file server supports.)
 
-```js
-const hasJson = () => sdk.capability('systemctl-json', async exec => {
-  const r = await exec(['systemctl', '--version'])
-  return Number(/systemd (\d+)/.exec(r.stdout)?.[1]) >= 246
-})
-```
-
-**Prefer machine-readable output** — `-o json`, explicit `--format`, `find
--printf`. Parsing human output is what rots across versions.
+**Prefer machine-readable output** — `-o json`, explicit `--format`. Parsing
+human output is what rots across versions.
 
 **A non-zero exit is not always an error.** `systemctl is-active` returns 3 for
 "inactive". Map the code; don't throw.
@@ -167,10 +186,23 @@ Files windows refresh themselves.
 
 ## Security model
 
-Plugins are **trusted code**, like VS Code extensions. A plugin runs in the same
-context as the desktop and can call `fw` directly — the adapter is not a
-sandbox. What `sdk.exec(argv)` guarantees is that *user input flowing through an
-adapter* cannot become a command. Install plugins you trust.
+Plugins are **trusted code** today, like VS Code extensions. A plugin runs in
+the same context as the desktop and can call `fw` directly — the adapter is not
+a sandbox. Install plugins you trust.
+
+What the tiers change is that this is now *fixable*. When every plugin's only
+primitive was `exec(argv)`, a manifest could not say anything meaningful — full
+shell or nothing. With typed lanes a manifest can be scoped:
+
+```json
+{ "permissions": {
+    "dbus": ["org.freedesktop.systemd1"],
+    "fs":   ["/etc/systemd/system"],
+    "exec": false } }
+```
+
+That enforcement is not built yet, and it has to live in Rust rather than JS to
+mean anything. But tier 1 is the precondition for it.
 
 ---
 

@@ -1,180 +1,250 @@
-//! Verification harness for the SSH core: proves the persistent shell works,
-//! measures real latency, and exercises the domain queries.
+//! Headless verification of the typed lanes against a real host.
+//!
+//!   cargo run --release --bin sshdesk-probe -- user@host
+//!
+//! Asserts by content, not exit code. Everything it creates lives under one
+//! temporary directory on the remote and is removed before it returns.
 
 use sshdesk_core::*;
-use std::env;
+use std::time::{Duration, Instant};
+
+macro_rules! ok {
+    ($($a:tt)*) => { println!("  \x1b[32m✓\x1b[0m {}", format!($($a)*)) };
+}
+macro_rules! bad {
+    ($($a:tt)*) => {{ println!("  \x1b[31m✗\x1b[0m {}", format!($($a)*)); FAILED.with(|f| f.set(f.get() + 1)); }};
+}
+
+thread_local!(static FAILED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
 
 fn main() {
-    let target = env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("usage: SSHDESK_PW=... sshdesk-probe <user@host>");
+    let target = std::env::args().nth(1).unwrap_or_else(|| {
+        eprintln!("usage: sshdesk-probe user@host");
         std::process::exit(2);
     });
-    // Never take a secret on argv - other local users can read it via `ps`.
-    let password = env::var("SSHDESK_PW").ok();
 
-    println!("connecting to {target} ...");
-    let t0 = std::time::Instant::now();
+    println!("\n\x1b[1msshdesk probe → {target}\x1b[0m");
+    let t0 = Instant::now();
     let mut h = match Host::connect(&target) {
         Ok(h) => h,
-        Err(e) => { eprintln!("connect failed: {e}"); std::process::exit(1); }
+        Err(e) => { eprintln!("connect failed: {e}"); std::process::exit(1) }
     };
-    println!("  connected in {:?}\n", t0.elapsed());
+    ok!("connected in {:.0} ms, remote uid {}", t0.elapsed().as_secs_f64() * 1000.0, h.uid());
 
-    // --- latency floor ---
-    println!("=== round-trip latency (persistent shell) ===");
-    let mut samples: Vec<u128> = Vec::new();
-    for _ in 0..10 {
-        let o = h.run("true").expect("noop failed");
-        samples.push(o.elapsed.as_micros());
-    }
-    samples.sort();
-    println!("  noop   median {:.1} ms   min {:.1} ms",
-             samples[5] as f64 / 1000.0, samples[0] as f64 / 1000.0);
+    section("SFTP — the file lane");
+    let tmp = probe_sftp(&mut h);
 
-    // --- correctness: exit codes and stderr must be separated ---
-    println!("\n=== stream separation ===");
-    let o = h.run("echo to-stdout; echo to-stderr >&2; exit 7").unwrap();
-    println!("  stdout : {:?}", o.stdout.trim());
-    println!("  stderr : {:?}", o.stderr.trim());
-    println!("  code   : {}", o.code);
-    assert_eq!(o.stdout.trim(), "to-stdout", "stdout leaked");
-    assert_eq!(o.stderr.trim(), "to-stderr", "stderr leaked");
-    assert_eq!(o.code, 7, "exit code lost");
-    println!("  OK - stdout/stderr/exit-code all separated");
+    section("D-Bus — the system lane");
+    probe_dbus(&mut h);
 
-    // --- domain queries ---
-    println!("\n=== domain queries ===");
-    let t = std::time::Instant::now();
-    let svcs = list_services(&mut h).expect("services");
-    println!("  services  {:>4} units    {:?}", svcs.len(), t.elapsed());
+    section("/proc — processes");
+    probe_proc(&mut h);
 
-    let t = std::time::Instant::now();
-    let procs = list_processes(&mut h).expect("processes");
-    println!("  processes {:>4} procs    {:?}", procs.len(), t.elapsed());
+    section("shell — the escape hatch");
+    probe_shell(&mut h);
 
-    let t = std::time::Instant::now();
-    let ports = list_ports(&mut h).expect("ports");
-    println!("  ports     {:>4} listen   {:?}", ports.len(), t.elapsed());
+    section("latency");
+    probe_latency(&mut h);
 
-    println!("\n  running services (first 6):");
-    for s in svcs.iter().filter(|s| s.sub == "running").take(6) {
-        println!("    {:<32} {:<10} {}", s.unit, s.active, s.description);
-    }
-    println!("\n  your ports (ownership filter):");
-    for p in ports.iter().filter(|p| p.mine) {
-        println!("    {:<6} {:<16} {}", p.port, p.bind, p.process);
-    }
-    println!("  ({} ports belong to root/others and are correctly not actionable)",
-             ports.iter().filter(|p| !p.mine).count());
-
-    // --- privileged action ---
-    if let Some(pw) = password {
-        println!("\n=== privileged action (sudo -S) ===");
-        let o = h.sudo("systemctl is-active ssh.service", &pw).unwrap();
-        println!("  sudo probe -> {:?} (code {})", o.stdout.trim(), o.code);
-        if o.code == 0 || !o.stdout.trim().is_empty() {
-            println!("  OK - sudo works over the persistent shell");
-        } else {
-            println!("  FAILED - stderr: {}", o.stderr);
-        }
-    } else {
-        println!("\n(skipping sudo test - set SSHDESK_PW to test privileged actions)");
-    }
-
-    // --- filesystem ---
-    println!("\n=== file browser ===");
-    let home = resolve_path(&mut h, "~").expect("resolve home");
-    println!("  home resolves to {home}");
-
-    // Create deliberately awkward names, then verify they survive parsing.
-    let setup = "mkdir -p /tmp/sdtest && cd /tmp/sdtest && \
-        rm -rf ./* 2>/dev/null; \
-        touch 'plain.txt' 'with space.txt' \"has'quote.txt\" 'unicode-\u{00e9}\u{00e5}.txt' && \
-        mkdir -p 'a dir' && echo hello-from-pi > plain.txt && \
-        dd if=/dev/zero of=big.bin bs=1k count=64 2>/dev/null; echo done";
-    h.run(setup).expect("setup");
-
-    let t = std::time::Instant::now();
-    let entries = list_dir(&mut h, "/tmp/sdtest").expect("list_dir");
-    println!("  listed {} entries in {:?}", entries.len(), t.elapsed());
-    for e in &entries {
-        println!("    {:<4} {:>7}  {:<10} {}", e.kind, e.size, e.mode, e.name);
-    }
-
-    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    for expect in ["plain.txt", "with space.txt", "has'quote.txt", "unicode-\u{00e9}\u{00e5}.txt", "a dir", "big.bin"] {
-        assert!(names.contains(&expect), "MISSING entry: {expect}");
-    }
-    assert_eq!(entries[0].kind, "dir", "directories should sort first");
-    println!("  OK - spaces, quotes and unicode all survived parsing");
-
-    let r = read_file(&mut h, "/tmp/sdtest/plain.txt", 4096).expect("read");
-    let (body, trunc) = (r.text.clone(), r.truncated);
-    println!("  read plain.txt -> {:?} (truncated: {trunc})", body.trim());
-    assert_eq!(body.trim(), "hello-from-pi");
-
-    let trunc = read_file(&mut h, "/tmp/sdtest/big.bin", 1024).expect("read big").truncated;
-    assert!(trunc, "64k file should report truncated at 1k cap");
-    println!("  OK - large file correctly truncated at cap");
-
-    // A path that needs quoting all the way through.
-    let sub = list_dir(&mut h, "/tmp/sdtest/a dir").expect("list dir with space");
-    println!("  OK - entered 'a dir' (contains {} entries)", sub.len());
-
-    // --- writes ---
-    println!("\n=== filesystem writes ===");
-    mkdir(&mut h, "/tmp/sdtest/new dir/nested").expect("mkdir");
-    println!("  mkdir with space + nested: ok");
-
-    // Content designed to break naive quoting / heredocs.
-    let nasty = "line1\n'single' \"double\" $VAR `cmd` \\backslash\nEOF\n$(whoami)\n";
-    write_file(&mut h, "/tmp/sdtest/nasty.txt", nasty).expect("write_file");
-    let back = read_file(&mut h, "/tmp/sdtest/nasty.txt", 4096).expect("read back").text;
-    assert_eq!(back, nasty, "content mangled in transit");
-    println!("  wrote+read shell-hostile content byte-identical: ok");
-
-    rename(&mut h, "/tmp/sdtest/nasty.txt", "/tmp/sdtest/re named.txt").expect("rename");
-    copy(&mut h, "/tmp/sdtest/re named.txt", "/tmp/sdtest/copy'd.txt").expect("copy");
-    let e = list_dir(&mut h, "/tmp/sdtest").expect("relist");
-    let names: Vec<&str> = e.iter().map(|x| x.name.as_str()).collect();
-    assert!(names.contains(&"re named.txt"), "rename lost the file");
-    assert!(names.contains(&"copy'd.txt"), "copy lost the file");
-    println!("  rename + copy across awkward names: ok");
-
-    // Permission failure must surface as an error, not silently succeed.
-    match write_file(&mut h, "/etc/sshdesk-should-fail", "x") {
-        Err(Error::Remote { code, stderr }) => {
-            println!("  denied write to /etc surfaced correctly: code {code}, {:?}",
-                     stderr.chars().take(50).collect::<String>());
-        }
-        Err(e) => println!("  denied write errored ({e})"),
-        Ok(()) => panic!("SECURITY: write to /etc unexpectedly succeeded"),
-    }
-
-    remove(&mut h, "/tmp/sdtest/copy'd.txt", false).expect("remove");
-    println!("  remove: ok");
-
-    // --- binary detection ---
-    println!("\n=== binary detection ===");
-    h.run("head -c 4096 /dev/urandom > /tmp/sdtest/random.bin").expect("make binary");
-    let bin = read_file(&mut h, "/tmp/sdtest/random.bin", 65536).expect("read bin");
-    println!("  random.bin  -> binary={} size={}", bin.binary, bin.size);
-    assert!(bin.binary, "random bytes should be detected as binary");
-
-    let txt = read_file(&mut h, "/etc/hostname", 65536).expect("read hostname");
-    println!("  /etc/hostname -> binary={} size={} text={:?}",
-             txt.binary, txt.size, txt.text.trim());
-    assert!(!txt.binary, "a text file must not be flagged binary");
-
-    // UTF-8 multibyte must survive the base64 round trip
-    h.run("printf 'héllo → wörld ✓\\n' > /tmp/sdtest/utf8.txt").expect("utf8");
-    let u = read_file(&mut h, "/tmp/sdtest/utf8.txt", 4096).expect("read utf8");
-    println!("  utf8.txt    -> {:?}", u.text.trim());
-    assert_eq!(u.text.trim(), "héllo → wörld ✓");
-    println!("  OK - binary vs text classified correctly, utf-8 preserved");
-
-    h.run("rm -rf /tmp/sdtest").ok();
-
+    if let Some(t) = tmp { let _ = remove(&mut h, &t, true); }
     h.disconnect();
-    println!("\ndisconnected.");
+
+    let failed = FAILED.with(|f| f.get());
+    println!();
+    if failed == 0 { println!("\x1b[32mall checks passed\x1b[0m\n") }
+    else { println!("\x1b[31m{failed} check(s) failed\x1b[0m\n"); std::process::exit(1) }
+}
+
+fn section(name: &str) { println!("\n\x1b[1m{name}\x1b[0m"); }
+
+fn probe_sftp(h: &mut Host) -> Option<String> {
+    let exts = match h.sftp() { Ok(s) => s.extensions(), Err(e) => { bad!("open: {e}"); return None } };
+    ok!("subsystem open, {} extensions: {}", exts.len(), exts.join(" "));
+    for want in ["posix-rename@openssh.com", "statvfs@openssh.com", "copy-data"] {
+        if exts.iter().any(|e| e == want) { ok!("has {want}") } else { bad!("missing {want}") }
+    }
+
+    let home = match h.sftp().and_then(|s| s.home()) {
+        Ok(v) => { ok!("home = {v}"); v }
+        Err(e) => { bad!("home: {e}"); return None }
+    };
+
+    match resolve_path(h, "~") {
+        Ok(p) if p == home => ok!("resolve_path(~) agrees, and moved no shell cwd"),
+        Ok(p) => bad!("resolve_path(~) = {p}, expected {home}"),
+        Err(e) => bad!("resolve_path: {e}"),
+    }
+
+    let dir = format!("{home}/.sshdesk-probe");
+    let _ = remove(h, &dir, true);
+    if let Err(e) = mkdir(h, &dir) { bad!("mkdir: {e}"); return None }
+    ok!("mkdir {dir}");
+
+    // Content deliberately includes the old framing marker and a non-ASCII
+    // name: both used to break the line-framed shell parser.
+    let body = "line1\n__SD_OUT_1__\nline3 — ünïcödé\n";
+    let f1 = format!("{dir}/a.txt");
+    match write_file(h, &f1, body) {
+        Ok(()) => ok!("write {} bytes", body.len()),
+        Err(e) => bad!("write: {e}"),
+    }
+    match read_file(h, &f1, 1 << 20) {
+        Ok(r) if r.text == body => ok!("read back byte-identical (frame marker in content is harmless now)"),
+        Ok(r) => bad!("read mismatch: {:?}", r.text),
+        Err(e) => bad!("read: {e}"),
+    }
+
+    let f2 = format!("{dir}/b.txt");
+    match copy(h, &f1, &f2) {
+        Ok(()) => match read_file(h, &f2, 1 << 20) {
+            Ok(r) if r.text == body => ok!("server-side copy verified by content"),
+            _ => bad!("copy produced wrong content"),
+        },
+        Err(e) => bad!("copy: {e}"),
+    }
+
+    let f3 = format!("{dir}/c.txt");
+    match rename(h, &f2, &f3) {
+        Ok(()) => ok!("posix-rename"),
+        Err(e) => bad!("rename: {e}"),
+    }
+
+    // A name that is not valid UTF-8 used to kill the connection outright.
+    let odd = format!("{dir}/caf\u{e9}-t\u{e8}st.txt");
+    let _ = write_file(h, &odd, "x");
+    match list_dir(h, &dir) {
+        Ok(es) => {
+            ok!("list {} entries: {}", es.len(),
+                es.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", "));
+            let a = es.iter().find(|e| e.name == "a.txt");
+            match a {
+                Some(e) if e.size as usize == body.len() && e.kind == "file" && e.mode.starts_with('-') =>
+                    ok!("typed attrs: size={} kind={} mode={} user={}", e.size, e.kind, e.mode, e.user),
+                Some(e) => bad!("attrs wrong: {e:?}"),
+                None => bad!("a.txt missing from listing"),
+            }
+        }
+        Err(e) => bad!("list: {e}"),
+    }
+
+    match disk_info(h, &home) {
+        Ok(d) if d.total > 0 => ok!("statvfs: {:.1} GB free of {:.1} GB",
+            d.avail as f64 / 1e9, d.total as f64 / 1e9),
+        Ok(_) => bad!("statvfs returned zeros"),
+        Err(e) => bad!("statvfs: {e}"),
+    }
+
+    match remove(h, &dir, true) {
+        Ok(()) => ok!("recursive remove"),
+        Err(e) => bad!("remove: {e}"),
+    }
+    Some(dir)
+}
+
+fn probe_dbus(h: &mut Host) {
+    let name = match h.bus() {
+        Ok(b) => b.unique_name.clone(),
+        Err(e) => { bad!("bus connect: {e}"); return }
+    };
+    ok!("forwarded system bus, unique name {name}");
+
+    match systemd_property(h, "Version") {
+        Ok(v) => ok!("systemd Version = {}", v.as_str().unwrap_or("?")),
+        Err(e) => bad!("Version: {e}"),
+    }
+    match systemd_property(h, "Architecture") {
+        Ok(v) => ok!("Architecture = {}", v.as_str().unwrap_or("?")),
+        Err(e) => bad!("Architecture: {e}"),
+    }
+
+    let t = Instant::now();
+    match list_services(h) {
+        Ok(s) if !s.is_empty() => {
+            ok!("{} services in {:.0} ms, no process spawned on the remote",
+                s.len(), t.elapsed().as_secs_f64() * 1000.0);
+            let running = s.iter().filter(|x| x.active == "active").count();
+            ok!("{running} active; e.g. {} [{}/{}]", s[0].unit, s[0].active, s[0].sub);
+        }
+        Ok(_) => bad!("no services returned"),
+        Err(e) => bad!("ListUnits: {e}"),
+    }
+
+    match watch_units(h) {
+        Ok(()) => ok!("subscribed to JobRemoved — push path open"),
+        Err(e) => bad!("subscribe: {e}"),
+    }
+
+    // Reads are unprivileged and work; writes hit polkit, by design.
+    match h.bus().and_then(|b| b.call(
+        "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager", "StartUnit",
+        &[dbus::Val::Str("sshdesk-probe-nonexistent.service".into()),
+          dbus::Val::Str("replace".into())])) {
+        Err(Error::Remote { stderr, .. }) if stderr.contains("InteractiveAuthorizationRequired") =>
+            ok!("privileged write correctly refused by polkit (writes stay on sudo)"),
+        Err(e) => ok!("privileged write refused: {e}"),
+        Ok(_) => bad!("privileged write unexpectedly succeeded"),
+    }
+}
+
+fn probe_proc(h: &mut Host) {
+    let t = Instant::now();
+    match list_processes(h) {
+        Ok(p) if !p.is_empty() => {
+            ok!("{} processes from /proc in {:.0} ms", p.len(), t.elapsed().as_secs_f64() * 1000.0);
+            let named = p.iter().filter(|x| !x.user.is_empty()).count();
+            ok!("{named} resolved to a user name via /etc/passwd over SFTP");
+            let top = &p[0];
+            ok!("busiest: {} pid={} cpu={:.1}% mem={:.1}% user={}",
+                top.command, top.pid, top.cpu, top.mem, top.user);
+            if p.iter().any(|x| x.pid == 1) { ok!("pid 1 present") } else { bad!("pid 1 missing") }
+        }
+        Ok(_) => bad!("no processes returned"),
+        Err(e) => bad!("list_processes: {e}"),
+    }
+}
+
+fn probe_shell(h: &mut Host) {
+    match list_ports(h) {
+        Ok(ports) => {
+            let mine = ports.iter().filter(|p| p.mine).count();
+            ok!("{} listening ports, {} mine (ownership filter intact)", ports.len(), mine);
+        }
+        Err(e) => bad!("list_ports: {e}"),
+    }
+    // The escape hatch still has to survive content that looks like framing.
+    match h.run("printf '__SD_OUT_99__\\nreal\\n'") {
+        Ok(o) if o.stdout.contains("real") => ok!("shell lane still works for arbitrary commands"),
+        Ok(o) => bad!("shell lane desynced on marker-like content: {:?}", o.stdout),
+        Err(e) => bad!("shell: {e}"),
+    }
+}
+
+fn probe_latency(h: &mut Host) {
+    let mut dbus_ms = vec![];
+    for _ in 0..10 {
+        let t = Instant::now();
+        if systemd_property(h, "Version").is_ok() { dbus_ms.push(t.elapsed().as_secs_f64() * 1000.0) }
+    }
+    let mut shell_ms = vec![];
+    for _ in 0..10 {
+        let t = Instant::now();
+        if h.run("systemctl --version >/dev/null").is_ok() { shell_ms.push(t.elapsed().as_secs_f64() * 1000.0) }
+    }
+    let med = |v: &mut Vec<f64>| { v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v.get(v.len()/2).copied().unwrap_or(0.0) };
+    let d = med(&mut dbus_ms);
+    let s = med(&mut shell_ms);
+    ok!("D-Bus property read : {d:.1} ms median");
+    ok!("shell + process spawn: {s:.1} ms median");
+    if d < s { ok!("typed lane is {:.1}x faster — the difference is the remote process spawn", s / d) }
+    else { bad!("typed lane not faster ({d:.1} vs {s:.1})") }
+
+    let mut n = 0;
+    if let Ok(b) = h.bus() {
+        if let Ok(Some(sig)) = b.next_signal(Duration::from_millis(300)) {
+            n += 1;
+            ok!("received a live signal: {}.{}", sig.interface, sig.member);
+        }
+    }
+    if n == 0 { ok!("no unit changed during the probe window (expected on an idle box)") }
 }

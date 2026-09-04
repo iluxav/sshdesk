@@ -100,21 +100,76 @@ fn service_action(
     action: String,
     password: String,
 ) -> Result<String, String> {
-    if !matches!(action.as_str(), "start" | "stop" | "restart" | "enable" | "disable") {
-        return Err(format!("refusing unknown action: {action}"));
-    }
-    // Unit names come from the remote, but never trust them back as shell input.
-    if !unit.chars().all(|c| c.is_alphanumeric() || "-_.@:\\".contains(c)) {
-        return Err(format!("refusing suspicious unit name: {unit}"));
-    }
     with_host(&hosts, &target, |h| {
-        let o = h.sudo(&format!("systemctl {action} {unit}"), &password)?;
-        if o.code == 0 {
-            Ok(format!("{action} {unit}: ok"))
-        } else {
-            Err(sshdesk_core::Error::Remote { code: o.code, stderr: o.stderr })
-        }
+        sshdesk_core::service_action(h, &unit, &action, &password)?;
+        Ok(format!("{action} {unit}: ok"))
     })
+}
+
+/// Read a systemd manager property straight off the bus.
+#[tauri::command]
+fn systemd_property(hosts: State<Hosts>, target: String, prop: String)
+    -> Result<serde_json::Value, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::systemd_property(h, &prop))
+}
+
+/// Arbitrary D-Bus call — the platform primitive plugins build on.
+///
+/// `signature` describes the argument types exactly as `busctl call` requires;
+/// JSON supplies the data. Without it there is no way to know whether `2` is a
+/// byte, a uint32 or a double. The reply comes back as JSON with variants
+/// unwrapped and dicts flattened to objects.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn dbus_call(
+    hosts: State<Hosts>,
+    target: String,
+    dest: String,
+    path: String,
+    interface: String,
+    member: String,
+    signature: Option<String>,
+    args: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, String> {
+    with_host(&hosts, &target, |h| {
+        let sig = signature.unwrap_or_default();
+        let vals = args.unwrap_or_default();
+        let mut built = Vec::new();
+        for (s, v) in sshdesk_core::dbus::split_sig(&sig).iter().zip(vals.iter()) {
+            built.push(sshdesk_core::dbus::from_json(s, v)?);
+        }
+        let out = h.bus()?.call(&dest, &path, &interface, &member, &built)?;
+        Ok(serde_json::Value::Array(out.iter().map(|v| v.to_json()).collect()))
+    })
+}
+
+/// Read one property off the bus, typed.
+#[tauri::command]
+fn dbus_get(
+    hosts: State<Hosts>,
+    target: String,
+    dest: String,
+    path: String,
+    interface: String,
+    property: String,
+) -> Result<serde_json::Value, String> {
+    with_host(&hosts, &target, |h| {
+        Ok(h.bus()?.get(&dest, &path, &interface, &property)?.to_json())
+    })
+}
+
+/// Typed free-space numbers, replacing the parsed `df -h` string.
+#[tauri::command]
+fn disk_info(hosts: State<Hosts>, target: String, path: String)
+    -> Result<sshdesk_core::DiskInfo, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::disk_info(h, &path))
+}
+
+/// Which SFTP extensions this server offers. The UI can light up server-side
+/// copy and typed statvfs only where they actually exist.
+#[tauri::command]
+fn sftp_extensions(hosts: State<Hosts>, target: String) -> Result<Vec<String>, String> {
+    with_host(&hosts, &target, |h| Ok(h.sftp()?.extensions()))
 }
 
 #[tauri::command]
@@ -176,10 +231,10 @@ fn download_file(
         .map(|c| if c == '/' || c == '\\' { '_' } else { c })
         .collect();
     let dest = format!("{base}/{safe}");
-    let map = hosts.0.lock().map_err(|e| e.to_string())?;
-    let h = map.get(&target).ok_or("not connected")?;
-    let n = h.download(&path, &dest).map_err(|e| e.to_string())?;
-    Ok(format!("saved {} ({} bytes) to ~/Downloads", safe, n))
+    with_host(&hosts, &target, |h| {
+        let n = h.download(&path, &dest)?;
+        Ok(format!("saved {safe} ({n} bytes) to ~/Downloads"))
+    })
 }
 
 #[tauri::command]
@@ -208,11 +263,12 @@ fn remove_path(hosts: State<Hosts>, target: String, path: String, recursive: boo
 }
 
 #[tauri::command]
-fn upload_file(hosts: State<Hosts>, target: String, local: String, remote: String) -> Result<String, String> {
-    let map = hosts.0.lock().map_err(|e| e.to_string())?;
-    let h = map.get(&target).ok_or("not connected")?;
-    let n = h.upload(&local, &remote).map_err(|e| e.to_string())?;
-    Ok(format!("uploaded {n} bytes"))
+fn upload_file(hosts: State<Hosts>, target: String, local: String, remote: String)
+    -> Result<String, String> {
+    with_host(&hosts, &target, |h| {
+        let n = h.upload(&local, &remote)?;
+        Ok(format!("uploaded {n} bytes"))
+    })
 }
 
 #[tauri::command]
@@ -405,6 +461,7 @@ fn main() {
         .manage(Forwards::default())
         .invoke_handler(tauri::generate_handler![
             connect, clock, disconnect, snapshot, service_action, kill_process,
+            systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,

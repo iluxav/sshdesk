@@ -2,7 +2,20 @@ import { fw } from '../fw'
 
 export interface ExecOut { stdout: string; stderr: string; code: number; elapsed_ms: number }
 
-/** What the platform hands a plugin's adapter. */
+/**
+ * What the platform hands a plugin's adapter.
+ *
+ * Three tiers, and the tier tells you what reliability you are getting:
+ *
+ *   1. `fs`, `dbus`  — a real protocol exists. Typed both ways, no parsing,
+ *                      nothing to break when the distro changes a CLI's output.
+ *   2. `proc`        — no protocol, but a stable kernel ABI underneath.
+ *   3. `exec`, `sudo`— the escape hatch. Unlimited, and entirely your problem:
+ *                      you parse, you probe capabilities, you validate.
+ *
+ * Reach for the highest tier that covers your case. If you find yourself
+ * parsing `systemctl` or `find` output, there is a tier-1 call for it.
+ */
 export interface Sdk {
   /** Run argv on the connected host. Elements are quoted individually, so a
    *  value passed through here can never widen into extra arguments. */
@@ -12,6 +25,11 @@ export interface Sdk {
   /** Probe once per host and cache the answer. */
   capability(name: string, probe: (exec: Sdk['exec']) => Promise<boolean>): Promise<boolean>
   host(): string
+
+  /** Tier 1 — files over SFTP. Typed attributes, byte-safe names. */
+  fs: typeof fw.fs
+  /** Tier 1 — the remote system bus. Typed arguments, typed replies. */
+  dbus: typeof fw.dbus
 }
 
 const caps = new Map<string, Promise<boolean>>()
@@ -54,6 +72,8 @@ export function makeSdk(hostOf: () => string = () => fw.host.current()): Sdk {
   return {
     exec,
     sudo,
+    fs: fw.fs,
+    dbus: fw.dbus,
     host: hostOf,
     capability(name, probe) {
       const key = `${hostOf()}:${name}`

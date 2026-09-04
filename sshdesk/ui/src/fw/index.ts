@@ -7,6 +7,9 @@ const invoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
 /** Current host every fs/sys call is issued against. */
 let host = ''
 
+/** Typed filesystem totals from `statvfs@openssh.com`. */
+export interface DiskInfo { total: number; free: number; avail: number }
+
 export interface Clipboard { op: 'copy' | 'cut'; paths: string[]; host: string }
 let clipboard: Clipboard | null = null
 
@@ -30,8 +33,10 @@ export const getHost = () => host
  * what the user may do; a denied operation comes back as a thrown error whose
  * message is the actual stderr from Linux. Apps show that message.
  *
- * What *is* enforced below the line: every path is shell-quoted in the Rust
- * core, so a hostile filename can never become a hostile command.
+ * What *is* enforced below the line: `fs` and `dbus` never touch a shell at
+ * all — SFTP carries paths as byte strings and D-Bus carries typed arguments,
+ * so a hostile filename has nothing to escape into. Only the `exec` escape
+ * hatch builds a command line, and there every argument is quoted separately.
  */
 function makeApi(getHost: () => string) {
   const t = () => ({ target: getHost() })
@@ -53,6 +58,37 @@ function makeApi(getHost: () => string) {
     remove:   (path: string, recursive = false) => invoke<void>('remove_path', { ...t(), path, recursive }),
     download: (path: string, name: string) => invoke<string>('download_file', { ...t(), path, name }),
     upload:   (local: string, remote: string) => invoke<string>('upload_file', { ...t(), local, remote }),
+    /** Typed free-space numbers. Was a parsed `df -h` string. */
+    disk:     (path: string) => invoke<DiskInfo>('disk_info', { ...t(), path }),
+    /** Which SFTP extensions this server offers — feature-detect, don't assume. */
+    caps:     () => invoke<string[]>('sftp_extensions', t()),
+  },
+
+  /**
+   * The remote system bus, reached by forwarding /run/dbus/system_bus_socket
+   * over the connection we already hold. Typed, introspectable, and it spawns
+   * no process on the remote — which is where the shell lane's latency went.
+   *
+   * `signature` describes argument types exactly as `busctl call` does.
+   */
+  dbus: {
+    call: (dest: string, path: string, iface: string, member: string,
+           signature?: string, args?: unknown[]) =>
+      invoke<unknown[]>('dbus_call', {
+        ...t(), dest, path, interface: iface, member, signature, args,
+      }),
+    get: (dest: string, path: string, iface: string, property: string) =>
+      invoke<unknown>('dbus_get', { ...t(), dest, path, interface: iface, property }),
+    /** Shorthand for the systemd manager, far and away the common case. */
+    systemd: (member: string, signature?: string, args?: unknown[]) =>
+      invoke<unknown[]>('dbus_call', {
+        ...t(),
+        dest: 'org.freedesktop.systemd1',
+        path: '/org/freedesktop/systemd1',
+        interface: 'org.freedesktop.systemd1.Manager',
+        member, signature, args,
+      }),
+    systemdProperty: (prop: string) => invoke<unknown>('systemd_property', { ...t(), prop }),
   },
 
   /**

@@ -6,9 +6,15 @@
 //! keeps every line of crypto out of this codebase.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
+
+pub mod dbus;
+pub mod sftp;
+
+pub use sftp::{DiskInfo, Entry};
 
 #[derive(Debug)]
 pub enum Error {
@@ -48,6 +54,15 @@ pub struct Host {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     seq: u64,
+    /// Remote uid. Needed for D-Bus EXTERNAL auth, which verifies the claimed
+    /// identity against the peer credentials of sshd — not of us.
+    uid: u32,
+    /// Typed lanes, opened on first use. Both multiplex over `ctl`, so neither
+    /// costs an authentication or a TCP connection.
+    sftp: Option<sftp::Sftp>,
+    bus: Option<dbus::Dbus>,
+    bus_sock: String,
+    passwd: Option<HashMap<u32, String>>,
 }
 
 impl Host {
@@ -70,9 +85,14 @@ impl Host {
         let stdin = shell.stdin.take().ok_or(Error::Closed)?;
         let stdout = BufReader::new(shell.stdout.take().ok_or(Error::Closed)?);
 
-        let mut h = Host { target: target.into(), ctl, shell, stdin, stdout, seq: 0 };
+        let mut h = Host {
+            target: target.into(), ctl, shell, stdin, stdout, seq: 0,
+            uid: 0, sftp: None, bus: None, bus_sock: String::new(), passwd: None,
+        };
         // Quiet the shell and make parsing predictable.
         h.run("export LC_ALL=C; unset PROMPT_COMMAND; set +o history")?;
+        // One call, cached for the connection's life.
+        h.uid = h.run("id -u")?.stdout.trim().parse().unwrap_or(0);
         Ok(h)
     }
 
@@ -181,30 +201,80 @@ impl Host {
         })
     }
 
-    /// Copy a remote file to the local machine.
+    /// Copy a remote file to the local machine over SFTP.
     ///
-    /// Reuses the existing ControlMaster socket, so there is no second
-    /// authentication and no new TCP connection.
-    pub fn download(&self, remote: &str, local: &str) -> Result<u64> {
-        let st = Command::new("scp")
-            .args([
-                "-o", &format!("ControlPath={}", self.ctl),
-                "-o", "BatchMode=yes",
-                &format!("{}:{}", self.target, remote),
-                local,
-            ])
-            .output()
-            .map_err(|e| Error::Spawn(e.to_string()))?;
-        if !st.status.success() {
-            return Err(Error::Remote {
-                code: st.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&st.stderr).trim().to_string(),
-            });
+    /// Was a `scp` subprocess. Same connection either way, but this needs no
+    /// process spawn and reports errors as protocol status codes rather than
+    /// scraped stderr.
+    pub fn download(&mut self, remote: &str, local: &str) -> Result<u64> {
+        self.sftp()?.download(remote, local)
+    }
+
+    /// Copy a local file up to the remote over SFTP.
+    pub fn upload(&mut self, local: &str, remote: &str) -> Result<u64> {
+        self.sftp()?.upload(local, remote)
+    }
+
+    pub fn uid(&self) -> u32 { self.uid }
+
+    /// SFTP subsystem, opened on first use. This is the file lane: typed
+    /// attributes, byte-safe names, server-side copy.
+    pub fn sftp(&mut self) -> Result<&mut sftp::Sftp> {
+        if self.sftp.is_none() {
+            self.sftp = Some(sftp::Sftp::open(&self.target, &self.ctl)?);
         }
-        Ok(std::fs::metadata(local).map(|m| m.len()).unwrap_or(0))
+        Ok(self.sftp.as_mut().expect("just set"))
+    }
+
+    /// Remote system bus, opened on first use.
+    ///
+    /// Forwards /run/dbus/system_bus_socket onto a local unix socket with
+    /// `-O forward` on the live connection — the same primitive as port
+    /// forwarding, and still nothing installed on the remote.
+    pub fn bus(&mut self) -> Result<&mut dbus::Dbus> {
+        if self.bus.is_none() {
+            let sock = bus_socket_path(&self.target);
+            // StreamLocalBindUnlink defaults to `no`, so a socket left behind
+            // by a previous run silently blocks the forward.
+            let _ = std::fs::remove_file(&sock);
+            self.mux(&["-O", "forward", "-L",
+                       &format!("{sock}:/run/dbus/system_bus_socket")])?;
+            let d = dbus::Dbus::connect(&sock, self.uid)?;
+            self.bus_sock = sock;
+            self.bus = Some(d);
+        }
+        Ok(self.bus.as_mut().expect("just set"))
+    }
+
+    /// uid -> name, read once over SFTP and cached. /proc only ever gives us
+    /// numbers, and shelling out per process would cost more than the listing.
+    fn passwd_map(&mut self) -> HashMap<u32, String> {
+        if let Some(m) = &self.passwd { return m.clone() }
+        let mut m = HashMap::new();
+        if let Ok(s) = self.sftp() {
+            if let Ok((bytes, _)) = s.read("/etc/passwd", 1 << 20) {
+                for line in String::from_utf8_lossy(&bytes).lines() {
+                    let f: Vec<&str> = line.split(':').collect();
+                    if f.len() > 2 {
+                        if let Ok(uid) = f[2].parse::<u32>() {
+                            m.insert(uid, f[0].to_string());
+                        }
+                    }
+                }
+            }
+        }
+        self.passwd = Some(m.clone());
+        m
     }
 
     pub fn disconnect(&mut self) {
+        self.sftp = None;
+        self.bus = None;
+        if !self.bus_sock.is_empty() {
+            let _ = self.mux(&["-O", "cancel", "-L",
+                               &format!("{}:/run/dbus/system_bus_socket", self.bus_sock)]);
+            let _ = std::fs::remove_file(&self.bus_sock);
+        }
         let _ = self.stdin.write_all(b"exit\n");
         let _ = self.shell.wait();
         let _ = Command::new("ssh").args(["-S", &self.ctl, "-O", "exit", &self.target]).output();
@@ -222,6 +292,14 @@ fn control_path(target: &str) -> String {
     let safe: String = target.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
     // Keep well under the ~104 byte unix socket path limit.
     format!("{home}/.sshdesk-{safe}.sock")
+}
+
+/// Local endpoint for the forwarded system bus. Same length discipline as
+/// `control_path` — unix socket paths are capped near 104 bytes.
+fn bus_socket_path(target: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let safe: String = target.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+    format!("{home}/.sshdesk-bus-{safe}.sock")
 }
 
 fn ensure_master(target: &str, ctl: &str, password: Option<&str>) -> Result<()> {
@@ -348,24 +426,139 @@ pub struct Port {
     pub mine: bool,
 }
 
+/// Units, straight off the bus.
+///
+/// `systemctl` is itself a D-Bus client, so the old shell path was asking a CLI
+/// to marshal a typed API into text for us to parse back. This is the same call
+/// `systemctl` makes, minus the round trip through human formatting — and it
+/// spawns no process on the remote, which is where the old ~15ms went.
 pub fn list_services(h: &mut Host) -> Result<Vec<Service>> {
-    let o = h.run("systemctl list-units --type=service --all --no-legend --no-pager -o json")?;
-    serde_json::from_str(&o.stdout).map_err(|e| Error::Io(format!("bad json: {e}")))
+    let out = h.bus()?.call(
+        "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager", "ListUnits", &[])?;
+    let mut v = Vec::new();
+    if let Some(dbus::Val::Array(_, items)) = out.into_iter().next() {
+        for it in items {
+            if let dbus::Val::Struct(f) = it {
+                let s = |i: usize| f.get(i).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let unit = s(0);
+                if !unit.ends_with(".service") { continue }
+                v.push(Service {
+                    unit,
+                    description: s(1),
+                    load: s(2),
+                    active: s(3),
+                    sub: s(4),
+                });
+            }
+        }
+    }
+    v.sort_by(|a, b| a.unit.cmp(&b.unit));
+    Ok(v)
 }
 
+/// Subscribe to unit state changes. Costs one AddMatch, then the remote pushes
+/// — no polling, no round trips. This is what the shell layer could never do.
+pub fn watch_units(h: &mut Host) -> Result<()> {
+    h.bus()?.add_match(
+        "type='signal',sender='org.freedesktop.systemd1',\
+interface='org.freedesktop.systemd1.Manager',member='JobRemoved'")?;
+    h.bus()?.call("org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                  "org.freedesktop.systemd1.Manager", "Subscribe", &[])?;
+    Ok(())
+}
+
+/// Read any systemd manager property (Version, Architecture, NNames, ...).
+pub fn systemd_property(h: &mut Host, prop: &str) -> Result<serde_json::Value> {
+    let v = h.bus()?.get("org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                         "org.freedesktop.systemd1.Manager", prop)?;
+    Ok(v.to_json())
+}
+
+/// Processes from /proc rather than `ps`.
+///
+/// There is no typed API for this — no D-Bus service owns the process table —
+/// so this stays in the shell lane. What changes is the *source*: /proc/[pid]/stat
+/// is a kernel ABI documented in proc(5) and stable for decades, whereas `ps`
+/// output formatting varies with procps version, locale and column widths.
+///
+/// `grep -H ''` prefixes each line with its filename, which turns a whole
+/// directory of files into one parseable stream in a single round trip.
+/// Process names containing spaces or parens are handled exactly, because the
+/// comm field is delimited by the *last* ')' — something `ps` cannot express.
 pub fn list_processes(h: &mut Host) -> Result<Vec<Process>> {
-    let o = h.run("ps -eo pid,user:20,pcpu,pmem,comm --no-headers")?;
-    Ok(o.stdout.lines().filter_map(|l| {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        if f.len() < 5 { return None; }
-        Some(Process {
-            pid: f[0].parse().ok()?,
-            user: f[1].into(),
-            cpu: f[2].parse().unwrap_or(0.0),
-            mem: f[3].parse().unwrap_or(0.0),
-            command: f[4..].join(" "),
-        })
-    }).collect())
+    let users = h.passwd_map();
+    let o = h.run(
+        "echo __MEM__; head -n1 /proc/meminfo; \
+         echo __UP__; cat /proc/uptime; \
+         echo __STAT__; grep -H '' /proc/[0-9]*/stat 2>/dev/null; \
+         echo __UID__; grep -H '^Uid:' /proc/[0-9]*/status 2>/dev/null")?;
+
+    let mut mem_total_kb = 0f32;
+    let mut uptime = 0f32;
+    let mut uid_of: HashMap<u32, u32> = HashMap::new();
+    let mut section = "";
+    let mut out = Vec::new();
+    const HZ: f32 = 100.0; // USER_HZ is 100 on every Linux port that matters
+
+    for line in o.stdout.lines() {
+        match line.trim() {
+            "__MEM__" | "__UP__" | "__STAT__" | "__UID__" => { section = line.trim(); continue }
+            _ => {}
+        }
+        match section {
+            "__MEM__" => {
+                mem_total_kb = line.split_whitespace().nth(1)
+                    .and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            }
+            "__UP__" => {
+                uptime = line.split_whitespace().next()
+                    .and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            }
+            "__UID__" => {
+                if let Some((path, rest)) = line.split_once(':') {
+                    let pid: u32 = path.trim_start_matches("/proc/")
+                        .trim_end_matches("/status").parse().unwrap_or(0);
+                    if let Some(u) = rest.split_whitespace().nth(1).and_then(|v| v.parse().ok()) {
+                        uid_of.insert(pid, u);
+                    }
+                }
+            }
+            "__STAT__" => {
+                let Some((path, rest)) = line.split_once(':') else { continue };
+                let pid: u32 = match path.trim_start_matches("/proc/")
+                    .trim_end_matches("/stat").parse() { Ok(v) => v, Err(_) => continue };
+                // comm is parenthesised and may itself contain ')' — split on the last one.
+                let Some(open) = rest.find('(') else { continue };
+                let Some(close) = rest.rfind(')') else { continue };
+                let comm = rest[open + 1..close].to_string();
+                let f: Vec<&str> = rest[close + 1..].split_whitespace().collect();
+                // Fields after comm are shifted by 2 relative to proc(5) numbering.
+                let utime: f32 = f.get(11).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                let stime: f32 = f.get(12).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                let starttime: f32 = f.get(19).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                let rss_pages: f32 = f.get(21).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+
+                // Lifetime-average CPU, the same quantity `ps pcpu` reports.
+                let alive = (uptime - starttime / HZ).max(0.01);
+                let cpu = ((utime + stime) / HZ / alive) * 100.0;
+                let mem = if mem_total_kb > 0.0 {
+                    (rss_pages * 4.0) / mem_total_kb * 100.0
+                } else { 0.0 };
+
+                out.push(Process { pid, user: String::new(), cpu, mem, command: comm });
+            }
+            _ => {}
+        }
+    }
+
+    for p in &mut out {
+        let uid = uid_of.get(&p.pid).copied().unwrap_or(u32::MAX);
+        p.user = users.get(&uid).cloned()
+            .unwrap_or_else(|| if uid == u32::MAX { String::new() } else { uid.to_string() });
+    }
+    out.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(out)
 }
 
 pub fn list_ports(h: &mut Host) -> Result<Vec<Port>> {
@@ -384,90 +577,18 @@ pub fn list_ports(h: &mut Host) -> Result<Vec<Port>> {
     }).collect())
 }
 
-// ---- file browsing ------------------------------------------------------
-
-#[derive(Debug, Serialize, Clone)]
-pub struct Entry {
-    pub name: String,
-    pub kind: String,   // "dir" | "file" | "link" | other find %y codes
-    pub size: u64,
-    pub mtime: i64,
-    pub mode: String,
-    pub user: String,
-    pub group: String,
-}
+// ---- file lane: SFTP, not shell -----------------------------------------
+//
+// Every function below used to build a shell command and parse its output.
+// They now delegate to the SFTP subsystem, which removes three parsers
+// (`find -printf`, `df | awk`, `cd && pwd`), two `scp` subprocess spawns, and
+// the class of bug where an exotic filename desynced the line-framed shell.
 
 /// Single-quote a value for safe interpolation into a shell command.
+/// Still needed by the escape hatch (`run_argv`, `sudo`) — nothing in the file
+/// lane goes near a shell any more.
 fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// List one directory.
-///
-/// Uses `find -printf` with NUL-delimited records rather than parsing `ls`:
-/// `ls` output is ambiguous for names containing spaces, and quoting modes
-/// differ across distros. `%f` is placed last so that even a tab inside a
-/// filename cannot shift the earlier fields.
-pub fn list_dir(h: &mut Host, path: &str) -> Result<Vec<Entry>> {
-    let cmd = format!(
-        "find {} -maxdepth 1 -mindepth 1 -printf '%y\\t%s\\t%T@\\t%M\\t%u\\t%g\\t%f\\0' 2>/dev/null; echo",
-        shq(path)
-    );
-    let o = h.run(&cmd)?;
-    let mut out: Vec<Entry> = o
-        .stdout
-        .split('\0')
-        .filter(|r| !r.trim().is_empty())
-        .filter_map(|rec| {
-            // 6 tabs, then the name — anything in the name stays in the name.
-            let mut it = rec.splitn(7, '\t');
-            let kind = it.next()?;
-            let size = it.next()?;
-            let mtime = it.next()?;
-            let mode = it.next()?;
-            let user = it.next()?;
-            let group = it.next()?;
-            let name = it.next()?;
-            Some(Entry {
-                name: name.trim_end_matches('\n').to_string(),
-                kind: match kind {
-                    "d" => "dir",
-                    "f" => "file",
-                    "l" => "link",
-                    other => other,
-                }
-                .to_string(),
-                size: size.parse().unwrap_or(0),
-                mtime: mtime.split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0),
-                mode: mode.to_string(),
-                user: user.to_string(),
-                group: group.to_string(),
-            })
-        })
-        .collect();
-    // Directories first, then case-insensitive by name.
-    out.sort_by(|a, b| {
-        (b.kind == "dir")
-            .cmp(&(a.kind == "dir"))
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-    Ok(out)
-}
-
-/// Resolve a path to its absolute form (expands `~`, `..`, symlinks).
-pub fn resolve_path(h: &mut Host, path: &str) -> Result<String> {
-    let expr = if path.is_empty() || path == "~" {
-        "$HOME".to_string()
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        format!("$HOME/{rest}")
-    } else {
-        shq(path)
-    };
-    let o = h.run(&format!("cd {expr} 2>/dev/null && pwd -P"))?;
-    if o.code != 0 || o.stdout.trim().is_empty() {
-        return Err(Error::Remote { code: o.code, stderr: format!("cannot enter {path}") });
-    }
-    Ok(o.stdout.trim().to_string())
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -478,108 +599,109 @@ pub struct FileRead {
     pub size: u64,
 }
 
-/// Read a file, capped so the UI never has to render a huge blob.
+pub fn list_dir(h: &mut Host, path: &str) -> Result<Vec<Entry>> {
+    h.sftp()?.list(path)
+}
+
+/// Absolute path, with `~` and `..` expanded.
 ///
-/// Content comes back base64-encoded: a binary file is not valid UTF-8, and
-/// reading it as text would either corrupt it or kill the line-framed shell.
-/// Encoding first means arbitrary bytes survive and we can classify locally.
-pub fn read_file(h: &mut Host, path: &str, max_bytes: usize) -> Result<FileRead> {
-    // No `tr -d` here: stripping the trailing newline would glue the frame
-    // marker onto the payload line. base64 wraps at 76 cols; we rejoin below.
-    // No `exit` either — that would kill the persistent shell; `false` sets the
-    // status without ending the session.
-    let o = h.run(&format!(
-        "if [ -r {p} ]; then stat -c %s {p}; head -c {n} {p} | base64; \
-         else echo \"cannot read {p}\" >&2; false; fi",
-        p = shq(path), n = max_bytes + 1
-    ))?;
-    if o.code != 0 {
-        return Err(Error::Remote { code: o.code, stderr: o.stderr });
+/// The shell version ran `cd <path> && pwd -P`, which permanently moved the
+/// persistent shell's working directory as a side effect. This has no such
+/// hazard because there is no shell involved.
+pub fn resolve_path(h: &mut Host, path: &str) -> Result<String> {
+    let s = h.sftp()?;
+    if path.is_empty() || path == "~" { return s.home() }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = s.home()?;
+        return s.realpath(&sftp::join(&home, rest));
     }
-    let mut lines = o.stdout.lines();
-    let size: u64 = lines.next().unwrap_or("0").trim().parse().unwrap_or(0);
-    let b64: String = lines.collect::<Vec<_>>().concat();
-    let bytes = b64decode(b64.trim());
+    s.realpath(path)
+}
 
-    let truncated = bytes.len() > max_bytes;
-    let bytes = &bytes[..bytes.len().min(max_bytes)];
+/// Read a file, capped so the UI never renders a huge blob.
+///
+/// No base64 round trip: SFTP carries bytes natively, so classification is
+/// just a look at what came back.
+pub fn read_file(h: &mut Host, path: &str, max_bytes: usize) -> Result<FileRead> {
+    let size = h.sftp()?.stat(path)?.size;
+    let (bytes, truncated) = h.sftp()?.read(path, max_bytes)?;
 
-    // A NUL byte in the first chunk is the same heuristic `grep` and `file`
-    // use; invalid UTF-8 is the other giveaway.
+    // A NUL byte in the first chunk is the heuristic `grep` and `file` use;
+    // invalid UTF-8 is the other giveaway.
     let has_nul = bytes.iter().take(8192).any(|&b| b == 0);
-    match (has_nul, std::str::from_utf8(bytes)) {
-        (false, Ok(text)) => Ok(FileRead { text: text.to_string(), truncated, binary: false, size }),
+    match (has_nul, String::from_utf8(bytes)) {
+        (false, Ok(text)) => Ok(FileRead { text, truncated, binary: false, size }),
         _ => Ok(FileRead { text: String::new(), truncated, binary: true, size }),
     }
 }
 
-fn b64decode(s: &str) -> Vec<u8> {
-    let val = |c: u8| -> i16 {
-        match c {
-            b'A'..=b'Z' => (c - b'A') as i16,
-            b'a'..=b'z' => (c - b'a') as i16 + 26,
-            b'0'..=b'9' => (c - b'0') as i16 + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => -1,
-        }
-    };
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
-    let mut acc: u32 = 0;
-    let mut bits = 0;
-    for &c in s.as_bytes() {
-        let v = val(c);
-        if v < 0 { continue; }
-        acc = (acc << 6) | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    out
+pub fn write_file(h: &mut Host, path: &str, content: &str) -> Result<()> {
+    h.sftp()?.write(path, content.as_bytes())
 }
-
-/// Total size of a directory's immediate contents, for the status line.
-pub fn dir_summary(h: &mut Host, path: &str) -> Result<String> {
-    let o = h.run(&format!("df -h {} | tail -1 | awk '{{print $4\" free of \"$2}}'", shq(path)))?;
-    Ok(o.stdout.trim().to_string())
-}
-
-// ---- filesystem writes --------------------------------------------------
-//
-// Permission enforcement is the remote machine's job: we run the command and
-// surface whatever it says. Our job is to make sure a hostile *name* can never
-// become a hostile *command* — every path goes through shq().
 
 pub fn mkdir(h: &mut Host, path: &str) -> Result<()> {
-    check(h.run(&format!("mkdir -p -- {}", shq(path)))?)
+    h.sftp()?.mkdir(path)
 }
 
 pub fn rename(h: &mut Host, from: &str, to: &str) -> Result<()> {
-    check(h.run(&format!("mv -n -- {} {}", shq(from), shq(to)))?)
+    h.sftp()?.rename(from, to)
 }
 
 pub fn remove(h: &mut Host, path: &str, recursive: bool) -> Result<()> {
-    let flag = if recursive { "-rf" } else { "-f" };
-    check(h.run(&format!("rm {flag} -- {}", shq(path)))?)
+    h.sftp()?.remove(path, recursive)
 }
 
+/// Server-side copy where the server supports `copy-data` — the bytes never
+/// cross the network, which `cp -a` over a shell could not achieve either
+/// without the same extension.
 pub fn copy(h: &mut Host, from: &str, to: &str) -> Result<()> {
-    check(h.run(&format!("cp -a -- {} {}", shq(from), shq(to)))?)
+    h.sftp()?.copy(from, to)
 }
 
-/// Write text to a remote file without a temp file on either side.
-/// Content goes through base64 so newlines, quotes and binary-ish bytes
-/// cannot terminate the heredoc or the shell word.
-pub fn write_file(h: &mut Host, path: &str, content: &str) -> Result<()> {
-    let b64 = b64encode(content.as_bytes());
-    check(h.run(&format!("printf '%s' {} | base64 -d > {}", shq(&b64), shq(path)))?)
+/// Free space, as numbers rather than a parsed `df -h` string.
+pub fn disk_info(h: &mut Host, path: &str) -> Result<DiskInfo> {
+    h.sftp()?.disk(path)
+}
+
+/// Kept for the status line the UI already renders.
+pub fn dir_summary(h: &mut Host, path: &str) -> Result<String> {
+    let d = h.sftp()?.disk(path)?;
+    if d.total == 0 { return Ok(String::new()) }
+    Ok(format!("{} free of {}", human(d.avail), human(d.total)))
+}
+
+fn human(n: u64) -> String {
+    const U: [&str; 6] = ["B", "K", "M", "G", "T", "P"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 { v /= 1024.0; i += 1 }
+    if i == 0 { format!("{n}B") } else { format!("{v:.1}{}", U[i]) }
 }
 
 fn check(o: Output) -> Result<()> {
     if o.code == 0 { Ok(()) } else { Err(Error::Remote { code: o.code, stderr: o.stderr }) }
 }
+
+/// Privileged unit action.
+///
+/// Writes deliberately stay on `sudo systemctl` rather than moving to D-Bus.
+/// The bus equivalent is blocked by polkit unless a `pkttyagent` is registered
+/// for the ssh session *and* the call sets ALLOW_INTERACTIVE_AUTHORIZATION —
+/// a long-lived pty per host and re-registration on every reconnect, to
+/// replace one line that already works. See the notes in dbus.rs.
+///
+/// The unit name is shell-quoted as well as whitelisted. It came from the
+/// remote, so it is not trusted back as shell input.
+pub fn service_action(h: &mut Host, unit: &str, action: &str, password: &str) -> Result<()> {
+    if !matches!(action, "start" | "stop" | "restart" | "reload" | "enable" | "disable") {
+        return Err(Error::Io(format!("refusing unknown action: {action}")))
+    }
+    if unit.is_empty() || !unit.chars().all(|c| c.is_alphanumeric() || "-_.@:".contains(c)) {
+        return Err(Error::Io(format!("refusing suspicious unit name: {unit}")))
+    }
+    check(h.sudo(&format!("systemctl {action} {}", shq(unit)), password)?)
+}
+
 
 pub fn b64encode(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -595,27 +717,6 @@ pub fn b64encode(data: &[u8]) -> String {
     out
 }
 
-impl Host {
-    /// Copy a local file up to the remote, reusing the ControlMaster socket.
-    pub fn upload(&self, local: &str, remote: &str) -> Result<u64> {
-        let st = Command::new("scp")
-            .args([
-                "-o", &format!("ControlPath={}", self.ctl),
-                "-o", "BatchMode=yes",
-                local,
-                &format!("{}:{}", self.target, remote),
-            ])
-            .output()
-            .map_err(|e| Error::Spawn(e.to_string()))?;
-        if !st.status.success() {
-            return Err(Error::Remote {
-                code: st.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&st.stderr).trim().to_string(),
-            });
-        }
-        Ok(std::fs::metadata(local).map(|m| m.len()).unwrap_or(0))
-    }
-}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ServerTime {

@@ -4,8 +4,12 @@ Proves the architecture: **a local GUI that drives real Linux boxes over plain S
 with nothing installed on the remote.**
 
 ```
-ui (webview)  ──IPC──▶  Rust backend  ──spawns──▶  ssh  ──▶  remote
-                        holds one persistent shell per host
+                        ┌─ SFTP subsystem ────────▶ files      (typed)
+ui (webview) ──IPC──▶   ├─ forwarded D-Bus socket ▶ systemd    (typed, + signals)
+             Rust core  ├─ /proc via one command ─▶ processes  (kernel ABI)
+                        └─ persistent bash shell ─▶ anything   (escape hatch)
+
+                        all four multiplex over ONE ssh ControlMaster
 ```
 
 ## Run
@@ -20,7 +24,14 @@ no effect until you rebuild — always use `make run`, never just relaunch the b
 
 Enter `user@host`, hit Connect. Sudo password is only needed for actions that change state.
 
-## The two decisions that matter
+## The three decisions that matter
+
+**Use the protocol where one exists.** A Linux GUI does not shell out — it calls
+D-Bus, and `systemctl` is itself just a D-Bus client. So files go over the SFTP
+subsystem and system state over the remote system bus, reached by forwarding
+`/run/dbus/system_bus_socket` with `-O forward` on the connection we already
+hold. Both are typed in and out, both need nothing installed on the remote, and
+neither spawns a process there — which is where the latency was.
 
 **Shell out to the real `ssh` binary.** Not a Rust or JS SSH library. That inherits
 ControlMaster multiplexing, `~/.ssh/config`, ssh-agent, `ProxyJump`, `known_hosts` and
@@ -46,17 +57,25 @@ caching.
 
 ## What's verified
 
-Against a real Ubuntu 25.10 Pi, via `core/src/bin/probe.rs`:
+Against a real Ubuntu Pi (systemd 257, OpenSSH 10.0p2), via `core/src/bin/probe.rs`:
 
-- persistent shell survives many commands, no leakage between them
-- stdout, stderr and exit code separated correctly (asserted)
-- 193 services parsed from `systemctl -o json` — structured, not screen-scraped
-- 173 processes, 11 listening ports
-- **sudo works over the persistent shell** using `sudo -S` (password on stdin)
-- ownership filter: 2 ports mine, 9 root's and correctly not actionable
+- SFTP subsystem opens over the existing ControlMaster; 11 extensions detected,
+  including `copy-data`, `posix-rename` and `statvfs`
+- write → read round trip is **byte-identical even when the content contains an
+  old frame marker** (`__SD_OUT_1__`), which used to desync the shell parser
+- `café-tèst.txt` lists correctly — non-ASCII names no longer break anything
+- server-side copy verified **by content**, not exit code
+- typed attrs: size, kind, mode string, owner name
+- `statvfs`: 88.5 GB free of 125.3 GB, as numbers
+- D-Bus: 193 services in 34 ms, `Version = 257.9-0ubuntu2.5`, `Architecture = arm64`
+- signal subscription accepted; a live signal was received during the run
+- privileged write **correctly refused by polkit** — the documented boundary
+- 167 processes from `/proc`, every one resolved to a user name via `/etc/passwd`
+- ownership filter intact: 11 listening ports, 2 mine
+- D-Bus 4.5 ms vs shell-plus-spawn 9.2 ms on the same box
 
 ```sh
-SSHDESK_PW=... ./core/target/release/sshdesk-probe iluxa@10.168.168.226
+./core/target/release/sshdesk-probe iluxa@10.168.168.226
 ```
 
 ## Design notes
