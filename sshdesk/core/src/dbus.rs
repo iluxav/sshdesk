@@ -454,9 +454,36 @@ impl Dbus {
         out
     }
 
-    fn read_msg(&mut self) -> Result<Msg> {
+    /// Read the fixed header, telling a timeout apart from a closed socket.
+    ///
+    /// These are not the same thing and conflating them cost a real bug: a
+    /// caller polling for signals every 500ms saw every quiet interval as the
+    /// connection dropping, so a package transaction died whenever the daemon
+    /// spent a moment loading its cache.
+    ///
+    /// A timeout counts as recoverable only before any byte of the header has
+    /// arrived. Once part of a message has been consumed the stream is no
+    /// longer at a boundary, and failing is better than misparsing the rest.
+    fn read_head(&mut self) -> Result<[u8; 16]> {
         let mut head = [0u8; 16];
-        self.s.read_exact(&mut head).map_err(|_| Error::Closed)?;
+        let mut got = 0;
+        while got < head.len() {
+            match self.s.read(&mut head[got..]) {
+                Ok(0) => return Err(Error::Closed),
+                Ok(n) => got += n,
+                Err(e) if matches!(e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                    if got == 0 { return Err(Error::Io("timeout".into())) }
+                    return Err(Error::Closed)
+                }
+                Err(_) => return Err(Error::Closed),
+            }
+        }
+        Ok(head)
+    }
+
+    fn read_msg(&mut self) -> Result<Msg> {
+        let head = self.read_head()?;
         if head[0] != b'l' { return Err(Error::Io("only little-endian dbus supported".into())) }
         let typ = head[1];
         let body_len = u32::from_le_bytes(head[4..8].try_into().unwrap()) as usize;
