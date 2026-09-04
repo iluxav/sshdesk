@@ -109,6 +109,14 @@ export async function loadPlugins(): Promise<string[]> {
         return a
       }
 
+      // Declared before the component is built: a plugin that throws while
+      // constructing should still contribute its icon and appear in Settings,
+      // rather than disappearing from both.
+      declareTokens(m.id, {
+        app: { type: 'icon', default: m.icon ?? '🧩', label: 'App icon' },
+        ...(m.tokens ?? {}),
+      })
+
       if (!mod.createApp) throw new Error('missing createApp')
 
       const html = htm.bind(React.createElement)
@@ -126,14 +134,6 @@ export async function loadPlugins(): Promise<string[]> {
       if (at >= 0) APPS[at] = def
       else APPS.push(def)
 
-      // Every plugin gets an `app` token whether it asked for one or not,
-      // defaulting to its manifest glyph. Without this the dock renders
-      // nothing for plugins, because the icon it draws comes from a token and
-      // an undeclared token resolves to empty.
-      declareTokens(m.id, {
-        app: { type: 'icon', default: m.icon ?? '🧩', label: 'App icon' },
-        ...(m.tokens ?? {}),
-      })
       loaded.push(m.id)
     } catch (e) {
       // One bad plugin must not stop the desktop from booting.

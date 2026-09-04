@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFw } from '../wm/host'
+import { APPS } from '../desktop/registry'
 import { Icon } from '../wm/Icon'
 import { declarations, resolve, configKey, setLayers, layerFor, localLayer,
          type TokenDecl, type Layer } from '../fw/tokens'
@@ -26,10 +27,15 @@ const LAYER_LABEL: Record<Layer, string> = {
 
 const APP_TITLES: Record<string, string> = {
   desk: 'Appearance',
-  files: 'Files',
-  terminal: 'Terminal',
-  editor: 'Editor',
-  settings: 'Settings',
+}
+
+/**
+ * Show an app's real name, not its id. A plugin whose id is `systemctl` calls
+ * itself "Services" everywhere else, and having Settings alone disagree makes
+ * it look like a different thing entirely.
+ */
+function titleOf(id: string): string {
+  return APP_TITLES[id] ?? APPS.find(a => a.id === id)?.title ?? id
 }
 
 export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
@@ -85,7 +91,7 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
             className={`flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs
               ${section === id ? 'bg-desk-accent/15 text-desk-fg' : 'text-desk-dim hover:bg-white/5'}`}>
             <Icon token={`${id}.app`} host={host} size={14} />
-            <span className="truncate">{APP_TITLES[id] ?? id}</span>
+            <span className="truncate">{titleOf(id)}</span>
             <span className="ml-auto text-[10px] opacity-50">{Object.keys(decls).length}</span>
           </button>
         ))}
@@ -128,7 +134,8 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
                 className="flex items-center gap-3 px-3 py-2 border-b border-desk-line/50">
                 <div className="w-40 shrink-0">
                   <div className="text-xs">{decl.label}</div>
-                  <div className="text-[10px] text-desk-dim font-mono truncate">{id}</div>
+                  <div className="text-[10px] text-desk-dim font-mono truncate"
+                       title={`config key: ${configKey(id, decl.type)}`}>{id}</div>
                 </div>
 
                 <div className="flex-1 min-w-0">
@@ -180,7 +187,11 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
               onPick={v => {
                 const name = picking.slice(picking.indexOf('.') + 1)
                 const decl = tokens[name]
+                // Never fail quietly: an unresolvable declaration used to drop
+                // the pick on the floor, which is indistinguishable from the
+                // write not working.
                 if (decl) write(picking, decl, v)
+                else setErr(`no declaration for ${picking} — cannot save`)
                 setPicking(null)
               }}
               onClose={() => setPicking(null)} />
