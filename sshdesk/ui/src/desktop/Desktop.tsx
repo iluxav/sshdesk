@@ -3,7 +3,7 @@ import { useWM, nextId } from '../wm/store'
 import { Window } from '../wm/Window'
 import { HostScope } from '../wm/host'
 import { declareCoreTokens } from './tokens'
-import { onTokensChanged, setLayers } from '../fw/tokens'
+import { onTokensChanged, setConfig } from '../fw/tokens'
 import { loadIconPacks } from '../fw/icons'
 import { applyTheme } from '../fw/theme'
 import { APPS } from './registry'
@@ -22,7 +22,6 @@ export function Desktop() {
   // Re-rendering on theme change keeps icon tokens live without every consumer
   // subscribing individually.
   const [, bumpTheme] = useState(0)
-  const hostsRef = useRef<string[]>([])
   /**
    * The focused pane. Each connected machine gets its own column, so where a
    * window *is* on screen tells you which machine it acts on — no mode to
@@ -35,48 +34,29 @@ export function Desktop() {
 
   const winsRef = useRef(state.wins)
   useEffect(() => { winsRef.current = state.wins })
-  useEffect(() => { hostsRef.current = hosts }, [hosts])
   const activeRef = useRef<string | null>(null)
   useEffect(() => { activeRef.current = active }, [active])
 
-  // Tokens, icon packs and the local config layer, once at boot. Host layers
-  // arrive per connection below.
+  // Tokens, icon packs and config, once at boot.
   useEffect(() => {
     declareCoreTokens()
     let live = true
     ;(async () => {
       await loadIconPacks().catch(() => [])
-      const layers = await fw.config.load().catch(() => null)
+      const cfg = await fw.config.load().catch(() => null)
       if (!live) return
-      if (layers) {
-        setLayers(layers)
-        for (const w of layers.warnings) console.warn('config:', w)
+      if (cfg) {
+        setConfig(cfg.values)
+        for (const w of cfg.warnings) console.warn('config:', w)
       }
-      applyTheme([])
+      applyTheme()
       bumpTheme(n => n + 1)
     })()
     return () => { live = false }
   }, [])
 
-  // A host's overrides load when it connects and are scoped to its windows,
-  // so connection order can never repaint the dock.
-  useEffect(() => {
-    let live = true
-    ;(async () => {
-      for (const h of hosts) {
-        const layers = await fw.config.load(h).catch(() => null)
-        if (!live || !layers) continue
-        setLayers(layers, h)
-      }
-      if (!live) return
-      applyTheme(hosts)
-      bumpTheme(n => n + 1)
-    })()
-    return () => { live = false }
-  }, [hosts])
-
   useEffect(() => onTokensChanged(() => {
-    applyTheme(hostsRef.current)
+    applyTheme()
     bumpTheme(n => n + 1)
   }), [])
 

@@ -5,18 +5,25 @@ and one place to change an icon or a colour so everything follows.
 
 ## Four decisions
 
-**Config is layered, and precedence is scoped rather than global.**
+**Config is one file on the machine you are sitting at.**
 
 ```
-1. defaults   every app's declared tokens (in code)
-2. local      ~/.sshdesk/config.toml            (your Mac)
-3. host       ~/.config/sshdesk/config.toml     (per remote, over SFTP)
+defaults   every app's declared tokens (in code)
+config     ~/.sshdesk/config.toml
 ```
 
-Layer 3 applies only to windows belonging to that host. The dock, menu bar and
-wallpaper always resolve from layers 1–2, so no reconnect order can repaint the
-desktop. "The prod box tints its own windows red" stops being a conflict and
-becomes the point.
+> **Reversed after first use.** This was originally layered, with per-host
+> overrides read and written over SFTP, scoped so a host could only restyle its
+> own windows. It survived about a day.
+>
+> The failure was not in the idea but in what it did to the user. The dock,
+> menu bar and Settings sidebar all resolve *without* a host, so an icon saved
+> at host scope was written successfully, reported "saved", and then changed
+> nothing anybody could see. Worse, the scope toggle made that the easy mistake
+> to make: the setting went to a Pi and stayed invisible.
+>
+> A layer whose effects are invisible from most of the UI is not a feature with
+> a bug in it. One file, no scope to choose.
 
 **Remote config may name an icon, never supply one.** Packs live on the Mac.
 A host says `lucide:folder`; it cannot hand SVG to the webview. SVG is an
@@ -102,13 +109,18 @@ It reads the same declarations everything else does and generates its UI:
 enumerate apps, group by app, render an editor per token type. Nothing about
 any particular plugin appears in its source.
 
-Two requirements, because layered config fails confusingly without them:
+Each row still says whether its value is `set` or `default`, and shows `↳ token`
+when it arrived through an `@` reference. With one file that is a smaller claim
+than it was, but it is still the difference between "my change did nothing" and
+"my change is not where I thought".
 
-- **Every row shows its winning layer** — `default` / `your Mac` / `prod-box`.
-  The classic failure is editing a value, seeing nothing change, and not
-  knowing a host layer is winning.
-- **A host toggle**, so "make prod red" is two clicks rather than a hand-edited
-  file over SSH.
+Apps are listed by their display name, not their id — a plugin whose id is
+`systemctl` calls itself "Services" everywhere else, and Settings disagreeing
+made it look like a different app.
+
+A write applies to the in-memory config immediately and re-reads only to
+confirm. The re-read used to come first with its failure swallowed, which let
+the UI say "saved" beside a stale value.
 
 Raw TOML stays first-class: a button opens the file in the existing Editor,
 which already speaks SFTP.
@@ -120,6 +132,9 @@ costs the `toml` crate, which is a different trade from hand-rolling base64.
 
 Writes go through a Rust command, never the frontend directly, so validation
 happens once on the way in for both the UI and a hand-edited file.
+
+Settings that were written to a host before this reversal are migrated into the
+local file on sight; the leftover `~/.config/sshdesk/` on a remote is inert.
 
 Reload is explicit: Settings writes, re-reads, re-applies. No file watching —
 `inotify` has no bus API, and a polling loop is poor value for something that

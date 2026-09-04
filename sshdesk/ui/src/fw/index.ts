@@ -180,19 +180,14 @@ function makeApi(getHost: () => string) {
   },
 
   /**
-   * Layered configuration. Defaults live in app declarations; this reads and
-   * writes the two persisted layers.
+   * Configuration: one file on this Mac. Defaults live in app declarations.
    */
   config: {
-    /** Both layers for a host, or just the local one when not connected. */
-    load: (target?: string) =>
-      invoke<{ local: Record<string, string>; host: Record<string, string>; warnings: string[] }>(
-        'config_load', { target }),
-    /** Write one key. Passing no value removes it, falling back to the layer below. */
-    set: (scope: 'local' | 'host', key: string, value?: string, target?: string) =>
-      invoke<void>('config_set', { scope, target, key, value }),
+    load: () => invoke<{ values: Record<string, string>; warnings: string[] }>('config_load'),
+    /** Write one key. Passing no value removes it, falling back to the default. */
+    set: (key: string, value?: string) => invoke<void>('config_set', { key, value }),
     /** Where the file lives, so it can be opened in the Editor. */
-    path: (scope: 'local' | 'host') => invoke<string>('config_path', { scope }),
+    path: () => invoke<string>('config_path'),
   },
 
   sys: {

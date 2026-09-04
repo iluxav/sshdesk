@@ -2,6 +2,11 @@
  * Design tokens: icons and theme values, declared by apps and overridden by
  * config.
  *
+ * One config file, on the machine you are sitting at. There is no host layer:
+ * it existed, and it meant a value could save successfully to a remote and
+ * then have no visible effect, because the dock and menu bar resolve without a
+ * host. One place, no scope to choose.
+ *
  * An app owns a namespace equal to its registered id, so there is one
  * mechanical rule and no separate name registry. A token id is
  * `<appId>.<name>`; the declared *type* routes it to a config section, which
@@ -26,7 +31,7 @@ export interface TokenDecl {
 }
 
 export type TokenMap = Record<string, TokenDecl>
-export type Layer = 'default' | 'local' | 'host'
+export type Layer = 'default' | 'set'
 
 export interface Resolved {
   value: string
@@ -38,8 +43,7 @@ export interface Resolved {
 type Flat = Record<string, string>
 
 const decls = new Map<string, TokenMap>()
-let local: Flat = {}
-const hosts = new Map<string, Flat>()
+let values: Flat = {}
 const listeners = new Set<() => void>()
 
 /** Apps declare what they own; Settings renders whatever is declared. */
@@ -63,37 +67,42 @@ export function configKey(id: string, type: TokenType): string {
   return (type === 'icon' ? 'icons.' : 'theme.') + id
 }
 
-export function setLayers(l: { local: Flat; host?: Flat }, host?: string) {
-  local = l.local ?? {}
-  if (host) hosts.set(host, l.host ?? {})
+export function setConfig(next: Flat) {
+  values = next ?? {}
   notify()
 }
 
-export function layerFor(host?: string): Flat {
-  return (host && hosts.get(host)) || {}
-}
-
-/** The local layer, for UI that needs to know whether a key is set *here*. */
-export function localLayer(): Flat { return local }
+/** The stored values, so the UI can tell "set" from "default". */
+export function config(): Flat { return values }
 
 /**
- * Resolve a token. First hit wins: host layer, local layer, declared default.
+ * Update one key in memory without a round trip.
+ *
+ * A write used to be followed by a re-read whose failure was swallowed, so the
+ * UI could say "saved" and still show the old value. Applying the known value
+ * directly makes the update deterministic; the re-read only confirms it.
+ */
+export function setValue(key: string, value?: string) {
+  if (value === undefined) delete values[key]
+  else values[key] = value
+  notify()
+}
+
+/**
+ * Resolve a token: the stored value if there is one, else the declared default.
  *
  * `@` references are followed explicitly rather than letting unset keys walk up
  * some hierarchy. Implicit fallback reads as convenient and behaves as spooky
  * action — you change one app's icon and three others move for reasons nothing
  * in the config explains. A reference is greppable and Settings can show it.
  */
-export function resolve(id: string, host?: string, seen = new Set<string>()): Resolved {
+export function resolve(id: string, seen = new Set<string>()): Resolved {
   const decl = declOf(id)
   if (!decl) return { value: '', layer: 'default' }
 
   const key = configKey(id, decl.type)
-  const hostLayer = layerFor(host)
-
-  let value = hostLayer[key]
-  let layer: Layer = 'host'
-  if (value === undefined) { value = local[key]; layer = 'local' }
+  let value: string | undefined = values[key]
+  let layer: Layer = 'set'
   if (value === undefined) { value = decl.default; layer = 'default' }
 
   if (value?.startsWith('@')) {
@@ -104,14 +113,14 @@ export function resolve(id: string, host?: string, seen = new Set<string>()): Re
       return { value: '', layer }
     }
     seen.add(id)
-    const inner = resolve(target, host, seen)
+    const inner = resolve(target, seen)
     return { value: inner.value, layer: inner.layer, via: target }
   }
   return { value: value ?? '', layer }
 }
 
-export function value(id: string, host?: string): string {
-  return resolve(id, host).value
+export function value(id: string): string {
+  return resolve(id).value
 }
 
 export function onTokensChanged(fn: () => void) {

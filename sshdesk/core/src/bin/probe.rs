@@ -47,7 +47,7 @@ fn main() {
     section("tree transfer — what drag and drop rides on");
     probe_trees(&mut h);
 
-    section("config — the host layer");
+    section("config");
     probe_config(&mut h);
 
     section("D-Bus — the system lane");
@@ -248,41 +248,30 @@ fn probe_trees(h: &mut Host) {
     ok!("cleaned up both sides");
 }
 
-/// The host config layer, which rides SFTP like everything else in the file
-/// lane. Asserted by round trip, and by checking that a hostile value is
-/// dropped without taking the rest of the file with it.
-fn probe_config(h: &mut Host) {
+/// The config file, including that a hostile value is dropped without taking
+/// the rest of the file with it.
+fn probe_config(_h: &mut Host) {
     use sshdesk_core::config;
 
-    let home = match h.sftp().and_then(|s| s.home()) {
-        Ok(v) => v, Err(e) => { bad!("home: {e}"); return }
-    };
-    let path = sshdesk_core::sftp::join(&home, config::HOST_PATH);
-    let existing = h.sftp().and_then(|s| s.read(&path, 1 << 20)).ok().map(|(b, _)| b);
+    let path = config::local_path();
+    let backup = std::fs::read_to_string(&path).ok();
 
     let mut flat = config::Flat::new();
     flat.insert("theme.desk.accent".into(), "#ef4444".into());
     flat.insert("icons.files.directory".into(), "desk:folder-open".into());
-
-    match config::write_host(h, &flat) {
-        Ok(()) => ok!("wrote host config to ~/{}", config::HOST_PATH),
-        Err(e) => { bad!("write_host: {e}"); return }
-    }
+    if let Err(e) = config::write_local(&flat) { bad!("write_local: {e}"); return }
+    ok!("wrote {}", path.display());
 
     let mut warnings = Vec::new();
-    let back = config::read_host(h, &mut warnings);
-    if back == flat { ok!("host layer round-tripped: {} keys", back.len()) }
+    let back = config::read_local(&mut warnings);
+    if back == flat { ok!("round-tripped {} keys", back.len()) }
     else { bad!("round trip mismatch: {back:?}") }
 
-    // A value that would be an injection vector must not survive, and must not
-    // take the valid keys down with it.
     let hostile = "[theme]\n\"desk.accent\" = \"url(https://evil/x)\"\n\
                    \"desk.ok\" = \"#00ff00\"\n";
-    if let Err(e) = h.sftp().and_then(|s| s.write(&path, hostile.as_bytes())) {
-        bad!("write hostile: {e}"); return
-    }
+    let _ = std::fs::write(&path, hostile);
     let mut warns2 = Vec::new();
-    let filtered = config::read_host(h, &mut warns2);
+    let filtered = config::read_local(&mut warns2);
     if filtered.contains_key("theme.desk.accent") {
         bad!("url() survived validation");
     } else if filtered.get("theme.desk.ok").map(String::as_str) != Some("#00ff00") {
@@ -291,12 +280,11 @@ fn probe_config(h: &mut Host) {
         ok!("url() dropped, the valid key beside it survived ({} warning)", warns2.len());
     }
 
-    // Put back whatever was there before.
-    match existing {
-        Some(bytes) => { let _ = h.sftp().and_then(|s| s.write(&path, &bytes)); }
-        None => { let _ = remove(h, &path, false); }
+    match backup {
+        Some(text) => { let _ = std::fs::write(&path, text); }
+        None => { let _ = std::fs::remove_file(&path); }
     }
-    ok!("restored the host's original config");
+    ok!("restored the original config");
 }
 
 fn probe_dbus(h: &mut Host) {

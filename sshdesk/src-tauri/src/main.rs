@@ -267,64 +267,33 @@ fn upload_files(
 
 // ---- configuration ------------------------------------------------------
 
-/// Both remote-capable config layers. Defaults are not included: they are
-/// declared by app manifests in the frontend, and duplicating that registry
-/// here would buy nothing.
+/// The config file. Defaults are not included: they are declared by app
+/// manifests in the frontend, and duplicating that registry here would buy
+/// nothing.
 #[tauri::command]
-fn config_load(hosts: State<Hosts>, target: Option<String>)
-    -> Result<sshdesk_core::config::Layers, String> {
-    match target {
-        None => Ok(sshdesk_core::config::load(None)),
-        Some(t) => {
-            let mut map = hosts.0.lock().map_err(|e| e.to_string())?;
-            // Not being connected is normal, not an error — the local layer is
-            // still perfectly readable.
-            Ok(sshdesk_core::config::load(map.get_mut(&t)))
-        }
-    }
+fn config_load() -> sshdesk_core::config::Settings {
+    sshdesk_core::config::load()
 }
 
-/// Write one key. Validation lives here rather than in the UI so a hand-edited
-/// file and the Settings app get identical treatment.
+/// Write one key, or remove it when no value is given.
+///
+/// Validation lives here rather than in the UI so a hand-edited file and the
+/// Settings app get identical treatment.
 #[tauri::command]
-fn config_set(
-    hosts: State<Hosts>,
-    scope: String,
-    target: Option<String>,
-    key: String,
-    value: Option<String>,
-) -> Result<(), String> {
+fn config_set(key: String, value: Option<String>) -> Result<(), String> {
     if let Some(v) = &value {
         sshdesk_core::config::validate(&key, v)?;
     }
-    match scope.as_str() {
-        "local" => {
-            let mut warnings = Vec::new();
-            let mut flat = sshdesk_core::config::read_local(&mut warnings);
-            match value { Some(v) => flat.insert(key, v), None => flat.remove(&key) };
-            sshdesk_core::config::write_local(&flat).map_err(|e| e.to_string())
-        }
-        "host" => {
-            let t = target.ok_or("host scope needs a target")?;
-            with_host(&hosts, &t, |h| {
-                let mut warnings = Vec::new();
-                let mut flat = sshdesk_core::config::read_host(h, &mut warnings);
-                match value { Some(v) => flat.insert(key, v), None => flat.remove(&key) };
-                sshdesk_core::config::write_host(h, &flat)
-            })
-        }
-        other => Err(format!("unknown scope: {other}")),
-    }
+    let mut warnings = Vec::new();
+    let mut flat = sshdesk_core::config::read_local(&mut warnings);
+    match value { Some(v) => flat.insert(key, v), None => flat.remove(&key) };
+    sshdesk_core::config::write_local(&flat).map_err(|e| e.to_string())
 }
 
 /// Where the file lives, so the UI can offer to open it in the Editor.
 #[tauri::command]
-fn config_path(scope: String) -> Result<String, String> {
-    match scope.as_str() {
-        "local" => Ok(sshdesk_core::config::local_path().to_string_lossy().to_string()),
-        "host" => Ok(format!("~/{}", sshdesk_core::config::HOST_PATH)),
-        other => Err(format!("unknown scope: {other}")),
-    }
+fn config_path() -> String {
+    sshdesk_core::config::local_path().to_string_lossy().to_string()
 }
 
 /// Every installed icon pack, sanitised and ready to inject as a sprite.

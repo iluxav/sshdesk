@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFw } from '../wm/host'
 import { APPS } from '../desktop/registry'
 import { Icon } from '../wm/Icon'
-import { declarations, resolve, configKey, setLayers, layerFor, localLayer,
+import { declarations, resolve, configKey, setConfig, setValue, config,
          type TokenDecl, type Layer } from '../fw/tokens'
 import { searchIcons, iconCount } from '../fw/icons'
 import { applyTheme } from '../fw/theme'
@@ -21,8 +21,7 @@ import { applyTheme } from '../fw/theme'
 
 const LAYER_LABEL: Record<Layer, string> = {
   default: 'default',
-  local: 'this Mac',
-  host: 'this host',
+  set: 'set',
 }
 
 const APP_TITLES: Record<string, string> = {
@@ -40,9 +39,7 @@ function titleOf(id: string): string {
 
 export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
   const fw = useFw()
-  const host = fw.host.current()
 
-  const [scope, setScope] = useState<'local' | 'host'>('local')
   const [section, setSection] = useState('desk')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -57,27 +54,32 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
     () => apps.find(([id]) => id === section)?.[1] ?? {},
     [apps, section])
 
+  // Re-read to confirm what landed. The optimistic update in `write` has
+  // already moved the UI, so a hiccup here cannot leave "saved" on screen
+  // beside a stale value — which is exactly how this failed before.
   const reload = useCallback(async () => {
-    const layers = await fw.config.load(host).catch(() => null)
-    if (layers) setLayers(layers, host)
-    applyTheme([host])
+    const cfg = await fw.config.load()
+    setConfig(cfg.values)
     bump(n => n + 1)
-  }, [fw, host])
+  }, [fw])
 
   const write = useCallback(async (id: string, decl: TokenDecl, value?: string) => {
+    const key = configKey(id, decl.type)
     setBusy(true); setErr(''); setNote('')
     try {
-      await fw.config.set(scope, configKey(id, decl.type), value, host)
+      await fw.config.set(key, value)
+      // Apply what we know before confirming, so the UI never reports success
+      // while still showing the old value.
+      setValue(key, value)
+      applyTheme()
       await reload()
-      setNote(value === undefined ? 'reset to the layer below' : 'saved')
+      setNote(value === undefined ? 'reset to default' : 'saved')
     } catch (e) { setErr(String(e)) } finally { setBusy(false) }
-  }, [fw, scope, host, reload])
+  }, [fw, reload])
 
   const openRaw = async () => {
-    try {
-      const path = await fw.config.path(scope)
-      fw.ui.open('editor', { path, host })
-    } catch (e) { setErr(String(e)) }
+    try { fw.ui.open('editor', { path: await fw.config.path(), host: '' }) }
+    catch (e) { setErr(String(e)) }
   }
 
   return (
@@ -90,7 +92,7 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
             onClick={() => setSection(id)}
             className={`flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs
               ${section === id ? 'bg-desk-accent/15 text-desk-fg' : 'text-desk-dim hover:bg-white/5'}`}>
-            <Icon token={`${id}.app`} host={host} size={14} />
+            <Icon token={`${id}.app`} size={14} />
             <span className="truncate">{titleOf(id)}</span>
             <span className="ml-auto text-[10px] opacity-50">{Object.keys(decls).length}</span>
           </button>
@@ -98,23 +100,9 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
       </div>
 
       <div className="flex flex-col flex-1 min-w-0">
-        {/* scope */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-desk-line shrink-0">
-          <div className="flex rounded-md overflow-hidden border border-desk-line text-[11px]">
-            {(['local', 'host'] as const).map(s => (
-              <button
-                key={s}
-                onClick={() => setScope(s)}
-                className={`px-2.5 py-1 ${scope === s
-                  ? 'bg-desk-accent/20 text-desk-fg' : 'text-desk-dim hover:bg-white/5'}`}>
-                {s === 'local' ? 'This Mac' : host.replace(/^.*@/, '') || 'This host'}
-              </button>
-            ))}
-          </div>
           <span className="text-[11px] text-desk-dim">
-            {scope === 'local'
-              ? 'applies everywhere'
-              : 'applies only to windows on this host'}
+            Saved on this Mac, and applies to every machine you connect to.
           </span>
           <button onClick={openRaw}
             className="ml-auto text-[11px] text-desk-dim hover:text-desk-fg">
@@ -126,9 +114,9 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
         <div className="flex-1 overflow-auto">
           {Object.entries(tokens).map(([name, decl]) => {
             const id = `${section}.${name}`
-            const r = resolve(id, host)
+            const r = resolve(id)
             const key = configKey(id, decl.type)
-            const setHere = (scope === 'local' ? localLayer() : layerFor(host))[key] !== undefined
+            const isSet = config()[key] !== undefined
             return (
               <div key={id}
                 className="flex items-center gap-3 px-3 py-2 border-b border-desk-line/50">
@@ -173,9 +161,9 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
                 </span>
 
                 <button
-                  disabled={!setHere || busy}
+                  disabled={!isSet || busy}
                   onClick={() => write(id, decl)}
-                  title={setHere ? 'Remove this override' : 'Nothing set at this layer'}
+                  title={isSet ? 'Reset to default' : 'Already the default'}
                   className="w-6 text-xs text-desk-dim hover:text-desk-fg disabled:opacity-20">↺</button>
               </div>
             )
@@ -183,7 +171,7 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
 
           {picking && (
             <IconPicker
-              current={resolve(picking, host).value}
+              current={resolve(picking).value}
               onPick={v => {
                 const name = picking.slice(picking.indexOf('.') + 1)
                 const decl = tokens[name]

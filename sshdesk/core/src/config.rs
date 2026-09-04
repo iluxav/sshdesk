@@ -1,34 +1,34 @@
-//! Layered configuration and icon packs.
+//! Configuration.
 //!
-//! Config exists at three layers, merged deepest-first per key:
+//! One file, on the machine you are sitting at:
 //!
 //! ```text
-//! 1. defaults   every app's declared tokens (these live in the frontend)
-//! 2. local      ~/.sshdesk/config.toml            (this Mac)
-//! 3. host       ~/.config/sshdesk/config.toml     (per remote, over SFTP)
+//! defaults   every app's declared tokens (these live in the frontend)
+//! config     ~/.sshdesk/config.toml
 //! ```
 //!
-//! Layer 3 is scoped: it applies only to windows belonging to that host, so no
-//! reconnect order can repaint the desktop chrome. Defaults are deliberately
-//! *not* handled here — they are declared by app manifests in JS, and teaching
-//! Rust about them would duplicate the registry for no gain.
+//! This started out layered, with per-host overrides read over SFTP. That was
+//! a mistake in practice rather than in theory: the desktop chrome resolves
+//! without a host, so anything saved to a host was written successfully and
+//! then had no visible effect — "saved" was true and useless. One file, one
+//! place, no scope to pick.
 //!
-//! Everything is flattened to dotted keys (`theme.files.row_hover`) so merging
-//! layers is a map merge and provenance is trackable per key.
+//! Defaults are deliberately not handled here. They are declared by app
+//! manifests in JS, and teaching Rust about them would duplicate the registry
+//! for no gain.
+//!
+//! Keys are flattened to dotted form (`theme.files.row_hover`) so a merge is a
+//! map merge and provenance stays trackable per key.
 
-use crate::{Error, Host, Result};
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const HOST_PATH: &str = ".config/sshdesk/config.toml";
-
 pub type Flat = BTreeMap<String, String>;
 
-/// One layer's contents plus where it came from, for the UI to explain itself.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Layers {
-    pub local: Flat,
-    pub host: Flat,
+pub struct Settings {
+    pub values: Flat,
     /// Non-fatal problems worth showing rather than swallowing.
     pub warnings: Vec<String>,
 }
@@ -183,35 +183,11 @@ pub fn write_local(flat: &Flat) -> Result<()> {
     std::fs::write(&path, render(flat)).map_err(|e| Error::Io(e.to_string()))
 }
 
-/// Read a host's config over SFTP. A missing file is the normal case.
-pub fn read_host(h: &mut Host, warnings: &mut Vec<String>) -> Flat {
-    let home = match h.sftp().and_then(|s| s.home()) { Ok(v) => v, Err(_) => return Flat::new() };
-    let path = crate::sftp::join(&home, HOST_PATH);
-    let Ok((bytes, _)) = h.sftp().and_then(|s| s.read(&path, 256 * 1024)) else {
-        return Flat::new()
-    };
-    match parse(&String::from_utf8_lossy(&bytes)) {
-        Ok(f) => sanitize(f, "host config", warnings),
-        Err(e) => { warnings.push(format!("host config: {e}")); Flat::new() }
-    }
-}
-
-pub fn write_host(h: &mut Host, flat: &Flat) -> Result<()> {
-    let home = h.sftp()?.home()?;
-    let dir = crate::sftp::join(&home, ".config/sshdesk");
-    // mkdir is not recursive in SFTP, so walk the two levels ourselves.
-    let _ = h.sftp()?.mkdir(&crate::sftp::join(&home, ".config"));
-    let _ = h.sftp()?.mkdir(&dir);
-    let path = crate::sftp::join(&home, HOST_PATH);
-    h.sftp()?.write(&path, render(flat).as_bytes())
-}
-
-/// Both remote-capable layers in one call.
-pub fn load(h: Option<&mut Host>) -> Layers {
+/// Everything the UI needs, in one call.
+pub fn load() -> Settings {
     let mut warnings = Vec::new();
-    let local = read_local(&mut warnings);
-    let host = match h { Some(h) => read_host(h, &mut warnings), None => Flat::new() };
-    Layers { local, host, warnings }
+    let values = read_local(&mut warnings);
+    Settings { values, warnings }
 }
 
 #[cfg(test)]

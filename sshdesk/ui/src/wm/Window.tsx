@@ -87,9 +87,9 @@ export function Window({ win, children }: { win: Win; children: ReactNode }) {
       ref={el}
       onPointerDown={focus}
       style={{ left: win.x, top: win.y, width: win.w, height: win.h, zIndex: win.z }}
-      // data-host and the app class are what the generated theme selectors
-      // hook onto: an app's tokens apply to its own windows, and a host's
-      // overrides reach only windows belonging to that host.
+      // The app class is what the generated theme selectors hook onto, so an
+      // app's tokens apply to its own windows. data-host is kept for
+      // debugging; it no longer drives styling.
       data-host={win.host}
       className={`absolute flex flex-col rounded-xl overflow-hidden app-${win.appId}
                  bg-desk-panel border border-desk-line shadow-2xl shadow-black/60`}
@@ -124,7 +124,7 @@ export function Window({ win, children }: { win: Win; children: ReactNode }) {
             className="w-3 h-3 rounded-full bg-desk-ok/90 hover:bg-desk-ok" />
         </div>
         <span className="opacity-70 flex items-center">
-          <Icon token={`${win.appId}.app`} host={win.host} fallback={win.icon} size={13} />
+          <Icon token={`${win.appId}.app`} fallback={win.icon} size={13} />
         </span>
         <span className="text-xs font-medium truncate">{win.title}</span>
         <span className="ml-auto pl-2 text-[10px] text-desk-dim truncate max-w-[40%]">

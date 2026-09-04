@@ -4,12 +4,10 @@
  * One generated <style> element, rewritten whenever config changes. No
  * re-render: the browser recalculates style, which is what it is good at.
  *
- * Scoping mirrors the config layering. Global tokens land on :root, an app's
- * tokens on `.app-<id>`, and a host's overrides on `[data-host="..."]` so they
- * reach only that host's windows — the reason the dock can never be repainted
- * by whichever box you happened to connect to first.
+ * Global tokens land on :root and an app's on `.app-<id>`, so one app can be
+ * restyled without touching anything else.
  */
-import { declarations, resolve, layerFor, configKey, type TokenType } from './tokens'
+import { declarations, resolve, type TokenType } from './tokens'
 
 const STYLE_ID = 'sshdesk-theme'
 
@@ -30,51 +28,35 @@ function themeTokens(): Array<[string, string, TokenType]> {
   return out
 }
 
-export function buildCss(hostNames: string[]): string {
+export function buildCss(): string {
   const root: string[] = []
   const perApp = new Map<string, string[]>()
 
   for (const [appId, name] of themeTokens()) {
-    const id = `${appId}.${name}`
-    const v = resolve(id).value
+    const v = resolve(`${appId}.${name}`).value
     if (!v) continue
     const decl = `${cssVar(appId, name)}: ${v};`
     if (appId === 'desk') root.push(decl)
-    else (perApp.get(appId) ?? perApp.set(appId, []).get(appId)!).push(decl)
+    else {
+      const list = perApp.get(appId) ?? []
+      list.push(decl)
+      perApp.set(appId, list)
+    }
   }
 
   let css = root.length ? `:root {\n  ${root.join('\n  ')}\n}\n` : ''
   for (const [appId, decls] of perApp) {
     css += `.app-${appId} {\n  ${decls.join('\n  ')}\n}\n`
   }
-
-  // Host overrides: only the keys that host actually sets, scoped to its windows.
-  for (const host of hostNames) {
-    const layer = layerFor(host)
-    const lines: string[] = []
-    for (const [appId, name, type] of themeTokens()) {
-      const key = configKey(`${appId}.${name}`, type)
-      const v = layer[key]
-      if (v) lines.push(`${cssVar(appId, name)}: ${v};`)
-    }
-    if (lines.length) {
-      css += `[data-host="${cssEscape(host)}"] {\n  ${lines.join('\n  ')}\n}\n`
-    }
-  }
   return css
 }
 
-/** Host names come from the user, so they are escaped before entering a selector. */
-function cssEscape(s: string): string {
-  return s.replace(/["\\]/g, '\\$&')
-}
-
-export function applyTheme(hostNames: string[]) {
+export function applyTheme() {
   let el = document.getElementById(STYLE_ID)
   if (!el) {
     el = document.createElement('style')
     el.id = STYLE_ID
     document.head.appendChild(el)
   }
-  el.textContent = buildCss(hostNames)
+  el.textContent = buildCss()
 }
