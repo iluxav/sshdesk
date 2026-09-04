@@ -1,12 +1,20 @@
 import * as React from 'react'
 import htm from 'htm'
 import { fw } from '../fw'
+import { declareTokens, type TokenMap } from '../fw/tokens'
 import { makeSdk, type Sdk } from './sdk'
 import { useFw, useHost } from '../wm/host'
 import { APPS, type AppDef } from '../desktop/registry'
 
 interface PluginModule {
-  manifest?: { id: string; name: string; icon?: string; window?: { w?: number; h?: number } }
+  manifest?: {
+    id: string
+    name: string
+    icon?: string
+    window?: { w?: number; h?: number }
+    /** Tokens this plugin owns; Settings renders an editor for each. */
+    tokens?: TokenMap
+  }
   createAdapter?: (sdk: Sdk) => Record<string, unknown>
   createApp?: (ctx: {
     React: typeof React
@@ -117,6 +125,15 @@ export async function loadPlugins(): Promise<string[]> {
       const at = APPS.findIndex(a => a.id === def.id)
       if (at >= 0) APPS[at] = def
       else APPS.push(def)
+
+      // Every plugin gets an `app` token whether it asked for one or not,
+      // defaulting to its manifest glyph. Without this the dock renders
+      // nothing for plugins, because the icon it draws comes from a token and
+      // an undeclared token resolves to empty.
+      declareTokens(m.id, {
+        app: { type: 'icon', default: m.icon ?? '🧩', label: 'App icon' },
+        ...(m.tokens ?? {}),
+      })
       loaded.push(m.id)
     } catch (e) {
       // One bad plugin must not stop the desktop from booting.

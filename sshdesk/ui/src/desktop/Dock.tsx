@@ -63,7 +63,7 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
               className="relative w-11 h-11 rounded-xl grid place-items-center text-2xl
                          bg-white/5 hover:bg-white/10 active:scale-95 transition"
             >
-              <Icon token={`${app.id}.app`} id={undefined} size={26} />
+              <Icon token={`${app.id}.app`} fallback={app.icon} size={26} />
               {wins.length > 0 && (
                 <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 flex gap-0.5">
                   {wins.slice(0, 4).map(w => (
@@ -83,7 +83,7 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
             title={`Restore ${w.title}`}
             className="h-11 px-3 rounded-xl flex items-center gap-2 text-xs
                        bg-white/5 hover:bg-white/10 transition">
-            <Icon token={`${w.appId}.app`} size={13} />
+            <Icon token={`${w.appId}.app`} fallback={w.icon} size={13} />
             <span className="max-w-28 truncate opacity-70">
               {w.title.replace(/^Files — /, '')}
             </span>

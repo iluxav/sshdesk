@@ -9,7 +9,7 @@ import { value as tokenValue } from '../fw/tokens'
  * codebase and every plugin manifest, so each can become a token when it is
  * convenient rather than in one sweeping commit that inevitably misses some.
  */
-export function Icon({ token, id, host, size = 16, className, title }: {
+export function Icon({ token, id, host, size = 16, className, title, fallback }: {
   /** Token id, e.g. `files.directory`. */
   token?: string
   /** Literal value, e.g. `desk:folder` or an emoji. Wins over `token`. */
@@ -18,17 +18,22 @@ export function Icon({ token, id, host, size = 16, className, title }: {
   size?: number
   className?: string
   title?: string
+  /** Drawn when the token resolves to nothing. */
+  fallback?: string
 }) {
-  const v = id ?? (token ? tokenValue(token, host) : '')
-  if (!v) return null
+  const v = id ?? (token ? tokenValue(token, host) : '') ?? ''
+  // An undeclared or unresolved token must still draw something. Rendering
+  // nothing is how the dock ended up with blank slots for plugins.
+  const shown = v || fallback || ''
+  if (!shown) return null
 
-  if (v.includes(':') && hasIcon(v)) {
+  if (shown.includes(':') && hasIcon(shown)) {
     return (
       <svg
         width={size} height={size} className={className} aria-hidden={!title}
         style={{ display: 'inline-block', verticalAlign: '-0.125em', flexShrink: 0 }}>
         {title && <title>{title}</title>}
-        <use href={`#${symbolId(v)}`} />
+        <use href={`#${symbolId(shown)}`} />
       </svg>
     )
   }
@@ -39,7 +44,7 @@ export function Icon({ token, id, host, size = 16, className, title }: {
     <span
       className={className} title={title} aria-hidden={!title}
       style={{ fontSize: size, lineHeight: 1, display: 'inline-block', flexShrink: 0 }}>
-      {v.includes(':') ? '▢' : v}
+      {shown.includes(':') ? '▢' : shown}
     </span>
   )
 }

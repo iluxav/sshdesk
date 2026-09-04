@@ -327,6 +327,21 @@ fn probe_dbus(h: &mut Host) {
         Err(e) => bad!("ListUnits: {e}"),
     }
 
+    // Regression: `-O forward` for a forward the master already holds exits 0
+    // and does nothing. Deleting the socket file first therefore loses it
+    // permanently, and every later connect fails with ENOENT — which is what
+    // the Services window hit while the probe stayed green, because the probe
+    // only ever opened one Host.
+    {
+        let sock = h.bus_path().to_string();
+        let target = h.target().to_string();
+        let _ = std::fs::remove_file(&sock);
+        match Host::connect(&target).and_then(|mut h2| { h2.bus()?; Ok(()) }) {
+            Ok(()) => ok!("a second Host recovers a bus socket deleted behind its back"),
+            Err(e) => bad!("bus not idempotent: {e}"),
+        }
+    }
+
     match watch_units(h) {
         Ok(()) => ok!("subscribed to JobRemoved — push path open"),
         Err(e) => bad!("subscribe: {e}"),

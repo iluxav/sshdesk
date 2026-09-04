@@ -241,12 +241,23 @@ impl Host {
     pub fn bus(&mut self) -> Result<&mut dbus::Dbus> {
         if self.bus.is_none() {
             let sock = bus_socket_path(&self.target);
-            // StreamLocalBindUnlink defaults to `no`, so a socket left behind
-            // by a previous run silently blocks the forward.
-            let _ = std::fs::remove_file(&sock);
-            self.mux(&["-O", "forward", "-L",
-                       &format!("{sock}:/run/dbus/system_bus_socket")])?;
-            let d = dbus::Dbus::connect(&sock, self.uid)?;
+            let spec = format!("{sock}:/run/dbus/system_bus_socket");
+
+            // Reuse a forward the master is already holding. Deleting the
+            // socket file first looks tidy and is a trap: `-O forward` for a
+            // forward the master already has exits 0 and does nothing, so the
+            // file never comes back and every later connect fails with ENOENT.
+            let d = match dbus::Dbus::connect(&sock, self.uid) {
+                Ok(d) => d,
+                Err(_) => {
+                    // Stale or absent. Retract the master's registration before
+                    // touching the file, so the re-add is not a no-op.
+                    let _ = self.mux(&["-O", "cancel", "-L", &spec]);
+                    let _ = std::fs::remove_file(&sock);
+                    self.mux(&["-O", "forward", "-L", &spec])?;
+                    dbus::Dbus::connect(&sock, self.uid)?
+                }
+            };
             self.bus_sock = sock;
             self.bus = Some(d);
         }
