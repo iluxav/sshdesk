@@ -423,12 +423,28 @@ function makeApi(getHost: () => string) {
  * The ambient API, bound to the *active* host. Fine for one-shot actions
  * triggered by the focused window.
  */
+/**
+ * One API object per host, kept.
+ *
+ * Returning a fresh object each call is a trap: `const api = fw.for(host)` in a
+ * component body then produces a new identity every render, so any useCallback
+ * or useEffect depending on it re-runs forever. That is a render loop throttled
+ * only by the speed of the SSH round trip — which reads as the whole desktop
+ * going slow rather than as an obvious hang. Caching makes the obvious usage
+ * correct, including in plugins, where nobody would think to memoise it.
+ */
+const perHostApi = new Map<string, ReturnType<typeof makeApi>>()
+
 export const fw = Object.assign(makeApi(() => host), {
   /**
    * A copy of the API pinned to one host. Windows use this so a background
    * poll keeps talking to its own machine even when you focus another.
    */
-  for: (target: string) => makeApi(() => target),
+  for: (target: string) => {
+    let a = perHostApi.get(target)
+    if (!a) { a = makeApi(() => target); perHostApi.set(target, a) }
+    return a
+  },
 })
 
 // Apps can reach it globally, as specified.

@@ -70,7 +70,10 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
         .catch(() => { if (live) setPreview(p => ({ ...p, [path]: '' })) })
     }
     return () => { live = false }
-  }, [fw, tokens, section, preview])
+    // Deliberately not depending on `tokens` or `preview`: both change identity
+    // on every render, and this only needs to run when the section does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fw, section])
 
 
   // Re-read to confirm what landed. The optimistic update in `write` has

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fw } from '../fw'
 import { useContextMenu } from '../wm/ContextMenu'
 
@@ -32,18 +32,23 @@ export function MenuBar({ hosts, active, onSwitch, onAdd, onDisconnect, onReload
    * hostname does not change while you are looking at it.
    */
   const [names, setNames] = useState<Record<string, string>>({})
+  // Which hosts have been asked already. A ref rather than a dependency,
+  // because depending on the state this effect writes makes it re-run on every
+  // answer — harmless here, but it is the shape that produces render loops.
+  const asked = useRef(new Set<string>())
   useEffect(() => {
     let live = true
     for (const h of hosts) {
-      if (names[h] !== undefined) continue
+      if (asked.current.has(h)) continue
+      asked.current.add(h)
       fw.for(h).dbus
         .get('org.freedesktop.hostname1', '/org/freedesktop/hostname1',
              'org.freedesktop.hostname1', 'Hostname')
         .then(v => { if (live && typeof v === 'string' && v) setNames(n => ({ ...n, [h]: v })) })
-        .catch(() => { if (live) setNames(n => ({ ...n, [h]: '' })) })
+        .catch(() => { /* fall back to the address */ })
     }
     return () => { live = false }
-  }, [hosts, names])
+  }, [hosts])
 
   // ⌘R reloads plugins rather than the webview — a full reload would drop the
   // SSH session and every open window.
