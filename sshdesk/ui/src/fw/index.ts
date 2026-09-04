@@ -334,6 +334,22 @@ function makeApi(getHost: () => string) {
    * Window management for apps. The desktop installs the real implementation
    * at mount; fw stays framework-agnostic and holds only the hook.
    */
+  /** The sshdesk window itself. */
+  win: {
+    minimize: async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      await getCurrentWindow().minimize()
+    },
+    toggleMaximize: async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      await getCurrentWindow().toggleMaximize()
+    },
+    close: async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window')
+      await getCurrentWindow().close()
+    },
+  },
+
   ui: {
     open(appId: string, props?: Record<string, unknown>) { opener?.(appId, props) },
     _install(fn: (appId: string, props?: Record<string, unknown>) => void) { opener = fn },

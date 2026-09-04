@@ -1,9 +1,45 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from '../wm/Icon'
 import { APPS } from './registry'
 import { useWM, nextId } from '../wm/store'
 import { useContextMenu, type MenuItem } from '../wm/ContextMenu'
 
 export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
+  /**
+   * Auto-hiding, so a window can use the full height of the screen.
+   *
+   * Revealed by the pointer reaching the bottom edge, which is tracked on the
+   * window rather than with a hover target: a hit area tall enough to catch the
+   * pointer reliably is also tall enough to swallow clicks meant for whatever
+   * is behind it.
+   */
+  const [shown, setShown] = useState(false)
+  const hideTimer = useRef<number | null>(null)
+
+  const reveal = useCallback(() => {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
+    setShown(true)
+  }, [])
+
+  const scheduleHide = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current)
+    // Long enough to survive crossing a gap in the dock, short enough not to
+    // feel stuck open.
+    hideTimer.current = window.setTimeout(() => setShown(false), 400)
+  }, [])
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (window.innerHeight - e.clientY <= 3) reveal()
+      else if (window.innerHeight - e.clientY > 80) scheduleHide()
+    }
+    window.addEventListener('pointermove', onMove)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      if (hideTimer.current) clearTimeout(hideTimer.current)
+    }
+  }, [reveal, scheduleHide])
+
   const { state, dispatch } = useWM()
   const menu = useContextMenu()
 
@@ -47,8 +83,19 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
     return items
   }
 
+  // An empty desktop keeps the dock up — there is nothing to uncover, and a
+  // dock you have to discover on a blank screen is a bad first impression.
+  const idle = state.wins.filter(w => w.host === host).length === 0
+  const open = idle || shown
+
   return (
-    <div className="absolute bottom-0 inset-x-0 h-14 flex items-end justify-center pb-2 z-[9999]">
+    <div
+      onPointerEnter={reveal}
+      onPointerLeave={scheduleHide}
+      style={{ pointerEvents: open ? 'auto' : 'none' }}
+      className={`absolute bottom-0 inset-x-0 h-14 flex items-end justify-center pb-2 z-[9999]
+                  transition-transform duration-200 ease-out
+                  ${open ? 'translate-y-0' : 'translate-y-[calc(100%-2px)]'}`}>
       <div className="flex items-center gap-2 px-3 py-2 rounded-2xl
                       bg-desk-panel/80 backdrop-blur-xl border border-desk-line
                       shadow-2xl shadow-black/50">

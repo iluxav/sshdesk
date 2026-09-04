@@ -2,7 +2,9 @@ import { Icon } from './Icon'
 import { useRef, type ReactNode } from 'react'
 import { useWM, type Win } from './store'
 
-const DOCK_H = 56
+// The dock hides itself now, so a maximized window gets the full height and
+// the dock floats over it when summoned — the way it works on macOS.
+const DOCK_H = 0
 
 /** Resize handles: [class for positioning, which edges it moves] */
 const HANDLES: [string, 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'][] = [

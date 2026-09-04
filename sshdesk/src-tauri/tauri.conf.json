@@ -20,7 +20,9 @@
         "x": 80,
         "y": 80,
         "center": false,
-        "label": "main"
+        "label": "main",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {

@@ -143,7 +143,9 @@ export function Desktop() {
 
       {/* One column per machine. Windows are absolutely positioned inside their
           own pane, so a window can never drift onto another machine's half. */}
-      <div className="absolute inset-0 top-7 bottom-14 flex">
+      {/* top-8 clears the menu bar; bottom-0 because the dock hides itself and
+          floats over the desktop rather than reserving a strip of it. */}
+      <div className="absolute inset-0 top-8 bottom-0 flex">
         {hosts.map((h, i) => {
           const mine = state.wins.filter(w => w.host === h)
           const focused = h === active

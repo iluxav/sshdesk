@@ -24,6 +24,27 @@ export function MenuBar({ hosts, active, onSwitch, onAdd, onDisconnect, onReload
 
   const host = target.includes('@') ? target.split('@')[1] : target
 
+  /**
+   * The machine's own name, not the address you typed to reach it.
+   *
+   * From hostname1 on the bus rather than `uname -n`: typed, and it costs no
+   * process on the remote. Resolved once per host and remembered, because a
+   * hostname does not change while you are looking at it.
+   */
+  const [names, setNames] = useState<Record<string, string>>({})
+  useEffect(() => {
+    let live = true
+    for (const h of hosts) {
+      if (names[h] !== undefined) continue
+      fw.for(h).dbus
+        .get('org.freedesktop.hostname1', '/org/freedesktop/hostname1',
+             'org.freedesktop.hostname1', 'Hostname')
+        .then(v => { if (live && typeof v === 'string' && v) setNames(n => ({ ...n, [h]: v })) })
+        .catch(() => { if (live) setNames(n => ({ ...n, [h]: '' })) })
+    }
+    return () => { live = false }
+  }, [hosts, names])
+
   // ⌘R reloads plugins rather than the webview — a full reload would drop the
   // SSH session and every open window.
   useEffect(() => {
@@ -64,7 +85,11 @@ export function MenuBar({ hosts, active, onSwitch, onAdd, onDisconnect, onReload
 
   return (
     <div
-      className="absolute top-0 inset-x-0 h-7 z-[9998] flex items-center gap-3 px-3 text-xs
+      // The window is Overlay-styled, so the native traffic lights float over
+      // this bar instead of occupying a row of their own. The left padding is
+      // their space; dragging the bar moves the window, as a title bar would.
+      data-tauri-drag-region
+      className="absolute top-0 inset-x-0 h-8 z-[9998] flex items-center gap-3 pl-[78px] pr-3 text-xs
                  bg-white/[0.07] backdrop-blur-2xl backdrop-saturate-150
                  border-b border-white/10 shadow-[0_1px_0_rgba(255,255,255,0.05)_inset]"
     >
@@ -80,8 +105,13 @@ export function MenuBar({ hosts, active, onSwitch, onAdd, onDisconnect, onReload
           { label: 'Reload plugins', icon: '⟳', shortcut: '⌘R',
             onSelect: () => { void onReloadPlugins?.() } },
           { type: 'separator' as const },
-          { label: `Disconnect ${host}`, icon: '⏻', danger: true,
-            onSelect: () => onDisconnect(active) },
+          { label: 'Minimize', icon: '▁', shortcut: '⌘M',
+            onSelect: () => { void fw.win.minimize() } },
+          { label: 'Zoom', icon: '▢', onSelect: () => { void fw.win.toggleMaximize() } },
+          { type: 'separator' as const },
+          { label: `Log out of ${host}`, icon: '⏻', onSelect: () => onDisconnect(active) },
+          { label: 'Quit sshdesk', icon: '✕', danger: true,
+            onSelect: () => { void fw.win.close() } },
         ])}
         className="font-semibold tracking-tight hover:bg-white/10 rounded px-1.5 py-0.5"
       >
@@ -89,26 +119,36 @@ export function MenuBar({ hosts, active, onSwitch, onAdd, onDisconnect, onReload
       </button>
 
       {hosts.map(h => {
-        const [hu, hh] = h.includes('@') ? h.split('@') : ['', h]
+        const [, addr] = h.includes('@') ? h.split('@') : ['', h]
         const on = h === active
+        const name = names[h]
+        // The machine menu. Switching is a click; everything that changes
+        // state lives behind this so it cannot be hit by accident.
+        const machineMenu = [
+          ...(on ? [] : [{ label: 'Switch to this machine', icon: '→',
+                           onSelect: () => onSwitch(h) }]),
+          { label: 'Minimize', icon: '▁', shortcut: '⌘M',
+            onSelect: () => { void fw.win.minimize() } },
+          { label: 'Zoom', icon: '▢', onSelect: () => { void fw.win.toggleMaximize() } },
+          { type: 'separator' as const },
+          { label: `Log out of ${name || addr}`, icon: '⏻',
+            onSelect: () => onDisconnect(h) },
+          { label: 'Quit sshdesk', icon: '✕', danger: true,
+            onSelect: () => { void fw.win.close() } },
+        ]
         return (
           <button
             key={h}
-            onClick={() => onSwitch(h)}
-            onContextMenu={ev => menu.open(ev, [
-              { label: 'Switch to this machine', icon: '→', onSelect: () => onSwitch(h) },
-              { type: 'separator' },
-              { label: `Disconnect ${hh}`, icon: '⏻', danger: true, onSelect: () => onDisconnect(h) },
-            ])}
-            title={`${h} — click to focus this pane`}
-            className={`flex items-center gap-1.5 px-2 py-0.5 rounded transition
+            onClick={ev => (on ? menu.open(ev, machineMenu) : onSwitch(h))}
+            onContextMenu={ev => menu.open(ev, machineMenu)}
+            title={on ? `${h} — click for machine options` : `${h} — click to focus this pane`}
+            className={`flex items-baseline gap-1.5 px-2 py-0.5 rounded transition
                         ${on ? 'bg-white/10' : 'hover:bg-white/[0.06] opacity-60'}`}
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${
+            <span className={`self-center w-1.5 h-1.5 rounded-full ${
               on ? 'bg-desk-ok shadow-[0_0_6px] shadow-desk-ok/60' : 'bg-desk-dim'}`} />
-            <span className="text-desk-fg/90">{hu}</span>
-            <span className="text-desk-dim">@</span>
-            <span className="text-desk-fg/90">{hh}</span>
+            <span className="text-desk-fg/90">{name || addr}</span>
+            {name && <span className="text-desk-dim text-[10px]">{addr}</span>}
           </button>
         )
       })}
