@@ -27,7 +27,7 @@ export function declareCoreTokens() {
     // Surfaces, so the chrome can be retinted without disturbing the palette.
     // The alpha is deliberate — these sit over the wallpaper.
     menubar:   { type: 'color', default: '#ffffff12', label: 'Menu bar' },
-    dock:      { type: 'color', default: '#1a1d24cc', label: 'Dock' },
+    dock:      { type: 'color', default: '#ffffff12', label: 'Dock' },
     titlebar:  { type: 'color', default: '#ffffff0a', label: 'Window title bar' },
     border:    { type: 'color', default: '#2b2f38',   label: 'Window border' },
     selection: { type: 'color', default: '#60a5fa4d', label: 'Selection' },
@@ -40,6 +40,13 @@ export function declareCoreTokens() {
      * filesystem access it would not otherwise have.
      */
     wallpaper: { type: 'image', default: '', label: 'Desktop picture' },
+
+    /**
+     * Painted over the picture, not under it. Transparent by default, so it
+     * does nothing until you want it to — which is usually when a bright
+     * wallpaper makes the desktop icons hard to read.
+     */
+    tint:      { type: 'color', default: '#00000000', label: 'Picture tint' },
   })
 
   declareTokens('files', {

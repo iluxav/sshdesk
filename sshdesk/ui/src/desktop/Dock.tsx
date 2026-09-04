@@ -117,8 +117,12 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
       <div
         style={{ background: 'var(--color-desk-dock)',
                  borderColor: 'var(--color-desk-border)' }}
+        // Same recipe as the menu bar: a nearly transparent fill over a heavy
+        // backdrop blur. The blur does the work — the fill only tints it, so
+        // an opaque colour here throws the effect away.
         className="flex items-center gap-2 px-3 py-2 rounded-2xl
-                   backdrop-blur-xl border shadow-2xl shadow-black/50">
+                   backdrop-blur-2xl backdrop-saturate-150 border
+                   shadow-2xl shadow-black/50">
         {APPS.map(app => {
           const wins = state.wins.filter(w => w.appId === app.id && w.host === host)
           return (

@@ -161,10 +161,16 @@ export function Desktop() {
       {/* The picture sits under everything, including the menu bar, which is
           translucent so it picks the image up. */}
       {wallpaper && (
-        <div
-          aria-hidden
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none"
-          style={{ backgroundImage: `url(${wallpaper})` }} />
+        <>
+          <div
+            aria-hidden
+            className="absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none"
+            style={{ backgroundImage: `url(${wallpaper})` }} />
+          {/* Over the picture, so lowering its opacity reveals more of the
+              image and raising it dims the image toward the tint colour. */}
+          <div aria-hidden className="absolute inset-0 pointer-events-none"
+               style={{ background: 'var(--color-desk-tint)' }} />
+        </>
       )}
 
       {/* top-8 clears the menu bar; bottom-0 because the dock hides itself and

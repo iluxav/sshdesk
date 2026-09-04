@@ -19,6 +19,32 @@ import { applyTheme } from '../fw/theme'
  * box" two clicks instead of a hand-edited file over SSH.
  */
 
+/**
+ * Split a colour into its opaque part and its alpha.
+ *
+ * `<input type="color">` has no concept of alpha — it silently returns
+ * `#rrggbb` — so the two are edited separately and recombined. Every surface
+ * in the theme is translucent, so alpha is not a detail here.
+ */
+function splitColor(v: string): { rgb: string; alpha: number } {
+  const m = /^#([0-9a-f]{3,8})$/i.exec((v ?? '').trim())
+  if (!m) return { rgb: '#000000', alpha: 1 }
+  let h = m[1]
+  if (h.length === 3 || h.length === 4) h = h.split('').map(c => c + c).join('')
+  return {
+    rgb: '#' + h.slice(0, 6),
+    alpha: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
+  }
+}
+
+function joinColor(rgb: string, alpha: number): string {
+  const a = Math.max(0, Math.min(1, alpha))
+  // Fully opaque stays six digits, so a hand-edited config keeps the shorter,
+  // more familiar form.
+  if (a >= 0.999) return rgb
+  return rgb + Math.round(a * 255).toString(16).padStart(2, '0')
+}
+
 const LAYER_LABEL: Record<Layer, string> = {
   default: 'default',
   set: 'set',
@@ -238,13 +264,48 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
                     </button>
                   ) : (
                     <div className="flex items-center gap-2">
-                      {decl.type === 'color' && (
-                        <input
-                          type="color"
-                          value={/^#[0-9a-f]{6}$/i.test(r.value) ? r.value : '#000000'}
-                          onChange={e => write(id, decl, e.target.value)}
-                          className="w-7 h-7 rounded border border-desk-line bg-transparent" />
-                      )}
+                      {decl.type === 'color' && (() => {
+                        const { rgb, alpha } = splitColor(r.value)
+                        return (
+                          <>
+                            {/* Checkerboard behind the swatch, so a translucent
+                                colour reads as translucent rather than as a
+                                slightly different shade of the panel. */}
+                            <span className="w-7 h-7 rounded border border-desk-line overflow-hidden
+                                             shrink-0 relative"
+                                  style={{ backgroundImage:
+                                    'linear-gradient(45deg,#8884 25%,transparent 25%,transparent 75%,#8884 75%),' +
+                                    'linear-gradient(45deg,#8884 25%,transparent 25%,transparent 75%,#8884 75%)',
+                                    backgroundSize: '8px 8px',
+                                    backgroundPosition: '0 0, 4px 4px' }}>
+                              <span className="absolute inset-0" style={{ background: r.value }} />
+                              <input
+                                type="color"
+                                value={rgb}
+                                onChange={e => write(id, decl, joinColor(e.target.value, alpha))}
+                                className="absolute inset-0 opacity-0 cursor-pointer" />
+                            </span>
+                            <input
+                              type="range" min={0} max={100} step={1}
+                              value={Math.round(alpha * 100)}
+                              title={`opacity ${Math.round(alpha * 100)}%`}
+                              // Live while dragging, written once on release —
+                              // a config file rewritten per pixel of travel
+                              // would be silly.
+                              onChange={e => {
+                                const v = joinColor(rgb, Number(e.target.value) / 100)
+                                setValue(configKey(id, decl.type), v)
+                                applyTheme()
+                              }}
+                              onPointerUp={e => write(id, decl,
+                                joinColor(rgb, Number((e.target as HTMLInputElement).value) / 100))}
+                              className="w-20 accent-[var(--color-desk-accent)]" />
+                            <span className="w-8 text-[10px] text-desk-dim tabular-nums">
+                              {Math.round(alpha * 100)}%
+                            </span>
+                          </>
+                        )
+                      })()}
                       <input
                         defaultValue={r.value}
                         key={r.value}
