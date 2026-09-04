@@ -433,6 +433,54 @@ fn download_file(
     })
 }
 
+// ---- packages -----------------------------------------------------------
+
+#[tauri::command]
+fn pkg_backend(hosts: State<Hosts>, target: String) -> Result<String, String> {
+    with_host(&hosts, &target, sshdesk_core::packagekit::backend)
+}
+
+#[tauri::command]
+fn pkg_search(hosts: State<Hosts>, target: String, query: String)
+    -> Result<Vec<sshdesk_core::packagekit::Package>, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::packagekit::search(h, &query))
+}
+
+#[tauri::command]
+fn pkg_installed(hosts: State<Hosts>, target: String)
+    -> Result<Vec<sshdesk_core::packagekit::Package>, String> {
+    with_host(&hosts, &target, sshdesk_core::packagekit::list_installed)
+}
+
+#[tauri::command]
+fn pkg_updates(hosts: State<Hosts>, target: String)
+    -> Result<Vec<sshdesk_core::packagekit::Package>, String> {
+    with_host(&hosts, &target, sshdesk_core::packagekit::list_updates)
+}
+
+#[tauri::command]
+fn pkg_details(hosts: State<Hosts>, target: String, id: String)
+    -> Result<sshdesk_core::packagekit::Details, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::packagekit::details(h, &id))
+}
+
+#[tauri::command]
+fn pkg_install(hosts: State<Hosts>, target: String, name: String, password: String)
+    -> Result<String, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::packagekit::install(h, &name, &password))
+}
+
+#[tauri::command]
+fn pkg_remove(hosts: State<Hosts>, target: String, name: String, password: String)
+    -> Result<String, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::packagekit::remove(h, &name, &password))
+}
+
+#[tauri::command]
+fn pkg_refresh(hosts: State<Hosts>, target: String, password: String) -> Result<String, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::packagekit::refresh(h, &password))
+}
+
 /// Raw bytes, base64'd for the IPC hop.
 ///
 /// Separate from `read_text` because that one classifies and returns a string;
@@ -708,6 +756,8 @@ fn main() {
             systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
             watch_units, stage_for_drag, upload_files,
             config_load, config_set, config_path, icon_packs, read_binary,
+            pkg_backend, pkg_search, pkg_installed, pkg_updates, pkg_details,
+            pkg_install, pkg_remove, pkg_refresh,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,

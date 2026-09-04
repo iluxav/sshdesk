@@ -12,7 +12,7 @@ import {
  */
 type Spec =
   | { kind: 'prompt'; title: string; label?: string; value?: string; placeholder?: string
-      okLabel?: string; resolve: (v: string | null) => void }
+      okLabel?: string; password?: boolean; resolve: (v: string | null) => void }
   | { kind: 'confirm'; title: string; message?: string; okLabel?: string; danger?: boolean
       resolve: (v: boolean) => void }
   | { kind: 'alert'; title: string; message?: string; resolve: () => void }
@@ -79,6 +79,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 {spec.label && <p className="text-xs text-desk-dim mb-2">{spec.label}</p>}
                 <input
                   ref={input}
+                  type={spec.password ? 'password' : 'text'}
                   value={text}
                   placeholder={spec.placeholder}
                   onChange={e => setText(e.target.value)}

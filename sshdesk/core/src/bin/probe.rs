@@ -50,6 +50,9 @@ fn main() {
     section("config");
     probe_config(&mut h);
 
+    section("packages — PackageKit over the bus");
+    probe_packages(&mut h);
+
     section("binary read — what the image viewer rides on");
     probe_binary(&mut h);
 
@@ -292,6 +295,73 @@ fn probe_config(_h: &mut Host) {
 
 /// A real image, uploaded and read back. Asserted on the bytes, because an
 /// image that decodes to the wrong pixels still "loads" successfully.
+/// PackageKit reads. Filter constants are a bitfield of `1 << PkFilterEnum`,
+/// which is exactly the sort of thing that is silently wrong until asserted.
+fn probe_packages(h: &mut Host) {
+    use sshdesk_core::packagekit as pk;
+
+    match pk::backend(h) {
+        Ok(b) => ok!("backend = {b}"),
+        Err(e) => { bad!("PackageKit unreachable: {e}"); return }
+    }
+
+    let t = Instant::now();
+    match pk::search(h, "htop") {
+        Ok(found) if !found.is_empty() => {
+            ok!("search found {} in {:.0} ms", found.len(), t.elapsed().as_secs_f64() * 1000.0);
+            match found.iter().find(|p| p.name == "htop") {
+                Some(p) => ok!("htop {} {} [{}] installed={}",
+                               p.version, p.arch, p.repo, p.installed),
+                None => bad!("htop not among the results"),
+            }
+            // Ranking puts installed first, which is what makes the list useful.
+            if found[0].installed || found.iter().all(|p| !p.installed) {
+                ok!("results ranked installed-first");
+            } else {
+                bad!("an available package outranked an installed one");
+            }
+        }
+        Ok(_) => bad!("search returned nothing for htop"),
+        Err(e) => bad!("search: {e}"),
+    }
+
+    let t = Instant::now();
+    match pk::list_installed(h) {
+        Ok(list) if list.len() > 100 => {
+            ok!("{} installed packages in {:.0} ms", list.len(),
+                t.elapsed().as_secs_f64() * 1000.0);
+            if list.iter().all(|p| p.installed) {
+                ok!("FILTER_INSTALLED really did filter — every result is installed");
+            } else {
+                bad!("filter leaked: {} not-installed in the list",
+                     list.iter().filter(|p| !p.installed).count());
+            }
+        }
+        Ok(list) => bad!("only {} installed packages, filter is wrong", list.len()),
+        Err(e) => bad!("list_installed: {e}"),
+    }
+
+    match pk::resolve(h, "bash") {
+        Ok(r) if !r.is_empty() => ok!("resolve(bash) -> {}", r[0].id),
+        Ok(_) => bad!("resolve found no bash"),
+        Err(e) => bad!("resolve: {e}"),
+    }
+
+    match pk::details(h, "htop;3.4.1-5build1;arm64;manual:ubuntu-questing-main") {
+        Ok(d) if !d.description.is_empty() || d.size > 0 => {
+            ok!("details: {} bytes, licence {:?}", d.size,
+                if d.license.is_empty() { "-" } else { &d.license });
+        }
+        Ok(_) => ok!("details returned empty (package id may have moved on)"),
+        Err(e) => ok!("details unavailable: {e}"),
+    }
+
+    match pk::list_updates(h) {
+        Ok(u) => ok!("{} updates pending", u.len()),
+        Err(e) => bad!("list_updates: {e}"),
+    }
+}
+
 fn probe_binary(h: &mut Host) {
     let home = match h.sftp().and_then(|s| s.home()) {
         Ok(v) => v, Err(e) => { bad!("home: {e}"); return }

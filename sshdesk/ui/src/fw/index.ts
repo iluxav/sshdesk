@@ -1,5 +1,14 @@
 import type { DirListing, FileRead, SavedConn, ServerTime, Snapshot } from './types'
 export * from './types'
+
+export interface PkgItem {
+  id: string; name: string; version: string; arch: string
+  repo: string; summary: string; installed: boolean
+}
+export type PkgList = PkgItem[]
+export interface PkgDetails {
+  id: string; description: string; license: string; url: string; size: number; group: number
+}
 export * from './tokens'
 export { loadIconPacks, iconPacks, hasIcon, searchIcons, iconCount, ensureSymbol } from './icons'
 export { applyTheme } from './theme'
@@ -21,6 +30,8 @@ export interface DiskInfo { total: number; free: number; avail: number }
 
 export interface Clipboard { op: 'copy' | 'cut'; paths: string[]; host: string }
 let clipboard: Clipboard | null = null
+/** Sudo passwords, in memory only, never persisted. */
+const sudoCache = new Map<string, string>()
 
 const listeners: Record<string, Set<(payload: any) => void>> = {}
 let opener: ((appId: string, props?: Record<string, unknown>) => void) | null = null
@@ -202,6 +213,29 @@ function makeApi(getHost: () => string) {
     clock: () => invoke<ServerTime>('clock', t()),
 
     /**
+     * The sudo password for this host, asked for once and held in memory only.
+     *
+     * Core apps need this the same way plugins do. It is never written
+     * anywhere; closing sshdesk forgets it, and so does disconnecting.
+     */
+    sudoPassword: async (why?: string): Promise<string | null> => {
+      const host = getHost()
+      const cached = sudoCache.get(host)
+      if (cached !== undefined) return cached
+      const got = await (dialogs?.prompt({
+        title: `Password for ${host.replace(/^.*@/, '')}`,
+        label: why ?? 'Needed to change packages on this machine',
+        password: true,
+        okLabel: 'Continue',
+      }) ?? Promise.resolve(null))
+      if (got) sudoCache.set(host, got)
+      return got
+    },
+
+    /** Forget it — after a wrong password, or on disconnect. */
+    forgetPassword: () => { sudoCache.delete(getHost()) },
+
+    /**
      * Ask the backend to push unit changes instead of being polled.
      *
      * Idempotent — one watcher per host no matter how many windows call it.
@@ -289,11 +323,29 @@ function makeApi(getHost: () => string) {
      */
     confirm: (o: { title: string; message?: string; okLabel?: string; danger?: boolean }) =>
       dialogs ? dialogs.confirm(o) : Promise.resolve(false),
-    prompt: (o: { title: string; label?: string; value?: string; placeholder?: string; okLabel?: string }) =>
+    prompt: (o: { title: string; label?: string; value?: string; placeholder?: string
+                  okLabel?: string; password?: boolean }) =>
       dialogs ? dialogs.prompt(o) : Promise.resolve(null),
     alert: (o: { title: string; message?: string }) =>
       dialogs ? dialogs.alert(o) : Promise.resolve(),
     _installDialogs(d: Dialogs) { dialogs = d },
+  },
+
+  /**
+   * Packages, via PackageKit. Reads are typed and cross-distro; writes go
+   * through `sudo pkcon`, because PackageKit gates installs behind polkit.
+   */
+  pkg: {
+    backend:   () => invoke<string>('pkg_backend', t()),
+    search:    (query: string) => invoke<PkgList>('pkg_search', { ...t(), query }),
+    installed: () => invoke<PkgList>('pkg_installed', t()),
+    updates:   () => invoke<PkgList>('pkg_updates', t()),
+    details:   (id: string) => invoke<PkgDetails>('pkg_details', { ...t(), id }),
+    install:   (name: string, password: string) =>
+      invoke<string>('pkg_install', { ...t(), name, password }),
+    remove:    (name: string, password: string) =>
+      invoke<string>('pkg_remove', { ...t(), name, password }),
+    refresh:   (password: string) => invoke<string>('pkg_refresh', { ...t(), password }),
   },
 
   path: {

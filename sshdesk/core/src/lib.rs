@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 pub mod config;
 pub mod icons;
+pub mod packagekit;
 pub mod dbus;
 pub mod sftp;
 
@@ -616,7 +617,7 @@ pub fn list_ports(h: &mut Host) -> Result<Vec<Port>> {
 /// Single-quote a value for safe interpolation into a shell command.
 /// Still needed by the escape hatch (`run_argv`, `sudo`) — nothing in the file
 /// lane goes near a shell any more.
-fn shq(s: &str) -> String {
+pub(crate) fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

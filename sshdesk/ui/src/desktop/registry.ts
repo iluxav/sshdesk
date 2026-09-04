@@ -4,6 +4,7 @@ import { Editor } from '../apps/Editor'
 import { Terminal } from '../apps/Terminal'
 import { Settings } from '../apps/Settings'
 import { ImageViewer } from '../apps/ImageViewer'
+import { Packages } from '../apps/Packages'
 import { mimeMatches, mimeOf } from '../fw/mime'
 
 /** An app is just a React component plus how to launch it. */
@@ -34,6 +35,7 @@ export const APPS: AppDef[] = [
   { id: 'editor', title: 'Editor', icon: '📝', component: Editor, w: 980, h: 640 },
   { id: 'terminal', title: 'Terminal', icon: '⌨️', component: Terminal, w: 780, h: 460 },
   { id: 'settings', title: 'Settings', icon: '⚙️', component: Settings, w: 780, h: 560 },
+  { id: 'packages', title: 'Packages', icon: '📦', component: Packages, w: 900, h: 600 },
   {
     id: 'image', title: 'Preview', icon: '🖼', component: ImageViewer,
     w: 820, h: 620, hidden: true, opens: ['image/*'],

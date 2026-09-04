@@ -44,6 +44,13 @@ export function declareCoreTokens() {
     code: { type: 'icon', default: 'desk:file-code', label: 'Source file' },
   })
 
+  declareTokens('packages', {
+    app:       { type: 'icon',  default: 'desk:app',      label: 'App icon' },
+    installed: { type: 'icon',  default: 'lucide:check',  label: 'Installed' },
+    available: { type: 'icon',  default: 'lucide:circle-dashed', label: 'Available' },
+    row_hover: { type: 'color', default: '#ffffff0d',     label: 'Row hover' },
+  })
+
   declareTokens('image', {
     app: { type: 'icon', default: 'desk:file', label: 'App icon' },
   })
