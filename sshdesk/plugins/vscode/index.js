@@ -10,6 +10,13 @@
  * builds only run *web* extensions. No rust-analyzer, no gopls, no debugger —
  * anything that spawns a process needs an extension host on a machine. Putting
  * that host where the code already is, is the whole point.
+ *
+ * Settings, extensions and workspace state live in three explicit directories
+ * under ~/.sshdesk/opt, so they survive a restart and are removable with the
+ * rest of it. The other half of persistence is the *port*: the workbench keeps
+ * plenty in browser storage, which is keyed by origin, so a forward that
+ * landed on a different port each launch reset everything. That is handled on
+ * the Rust side, which now derives a stable port per forward.
  */
 
 const VERSION = '1.109.5'
@@ -77,6 +84,8 @@ export function createAdapter(sdk) {
     nohup "$D/bin/openvscode-server" \
       --socket-path "${SOCK}" --without-connection-token \
       --server-data-dir "${OPT}/openvscode-data" \
+      --user-data-dir "${OPT}/openvscode-user" \
+      --extensions-dir "${OPT}/openvscode-extensions" \
       --telemetry-level off --accept-server-license-terms \
       > "${LOG}" 2>&1 &
     echo $! > "${PID}"

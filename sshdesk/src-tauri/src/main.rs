@@ -25,6 +25,19 @@ struct Watchers(Mutex<std::collections::HashSet<String>>);
 struct Forwards(Mutex<HashMap<String, u16>>);
 
 /// Ask the OS for a free local port by binding :0 and immediately releasing it.
+/// A stable port in 20000–29999 for a given forward.
+///
+/// FNV-1a: not for security, only so the same key lands on the same port every
+/// time, on every machine, with no state to keep.
+fn stable_port(key: &str) -> u16 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    20000 + (h % 10000) as u16
+}
+
 fn free_port(preferred: u16) -> u16 {
     use std::net::TcpListener;
     if preferred >= 1024 && TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
@@ -730,7 +743,15 @@ fn forward_socket(
     if let Some(p) = fwds.0.lock().map_err(|e| e.to_string())?.get(&key) {
         return Ok(*p)
     }
-    let local = free_port(local_port.unwrap_or(0));
+    // Deterministic, not whatever the OS hands out.
+    //
+    // Anything served through this forward is a web origin, and an origin
+    // includes the port — so a fresh port every launch means fresh localStorage
+    // and IndexedDB, and anything the page remembered is gone. VS Code keeps a
+    // good deal of its state there, which is why its settings reset on every
+    // reconnect. Same rule sshloop uses for exactly this reason: a stable hash
+    // so a bookmark, and a browser's memory, survive a reconnect.
+    let local = free_port(local_port.unwrap_or_else(|| stable_port(&key)));
     if local == 0 { return Err("no free local port".into()) }
     let map = hosts.0.lock().map_err(|e| e.to_string())?;
     let h = map.get(&target).ok_or("not connected")?;
@@ -797,6 +818,29 @@ fn open_url(url: String) -> Result<(), String> {
     }
     std::process::Command::new("open").arg(url).spawn().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stable_port;
+
+    #[test]
+    fn the_same_forward_always_gets_the_same_port() {
+        let key = "iluxa@10.168.168.226:sock:/home/iluxa/.sshdesk/opt/openvscode.sock";
+        let first = stable_port(key);
+        for _ in 0..100 { assert_eq!(stable_port(key), first) }
+        assert!((20000..30000).contains(&first), "out of range: {first}");
+    }
+
+    #[test]
+    fn different_forwards_get_different_ports() {
+        // Not a guarantee of the hash, but a collision between two hosts would
+        // mean two machines sharing one web origin — worth noticing here.
+        let ports: std::collections::HashSet<u16> = [
+            "a@host1:sock:/x", "a@host2:sock:/x", "b@host1:sock:/x", "a@host1:sock:/y",
+        ].iter().map(|k| stable_port(k)).collect();
+        assert_eq!(ports.len(), 4, "collision across distinct forwards");
+    }
 }
 
 fn main() {
