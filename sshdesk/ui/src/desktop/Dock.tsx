@@ -8,10 +8,18 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
   /**
    * Auto-hiding, so a window can use the full height of the screen.
    *
-   * Revealed by the pointer reaching the bottom edge, which is tracked on the
-   * window rather than with a hover target: a hit area tall enough to catch the
-   * pointer reliably is also tall enough to swallow clicks meant for whatever
-   * is behind it.
+   * Revealed two ways, because neither is enough on its own:
+   *
+   *   * a `pointermove` listener on the window, which is generous (24px) and
+   *     works everywhere the page itself is;
+   *   * a thin strip pinned above everything, because pointer events inside a
+   *     cross-origin iframe never reach the parent document. With VS Code
+   *     maximized its frame covers the whole desktop, so without the strip the
+   *     only place the pointer is visible at all is the sliver below it — which
+   *     is exactly what "I have to go all the way to the edge" was.
+   *
+   * The strip is 4px and exists only while the dock is hidden, so it eats a
+   * click at the very bottom edge and nothing more.
    */
   const [shown, setShown] = useState(false)
   const hideTimer = useRef<number | null>(null)
@@ -25,13 +33,14 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
     if (hideTimer.current) clearTimeout(hideTimer.current)
     // Long enough to survive crossing a gap in the dock, short enough not to
     // feel stuck open.
-    hideTimer.current = window.setTimeout(() => setShown(false), 400)
+    hideTimer.current = window.setTimeout(() => setShown(false), 450)
   }, [])
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
-      if (window.innerHeight - e.clientY <= 3) reveal()
-      else if (window.innerHeight - e.clientY > 80) scheduleHide()
+      const fromBottom = window.innerHeight - e.clientY
+      if (fromBottom <= 24) reveal()
+      else if (fromBottom > 90) scheduleHide()
     }
     window.addEventListener('pointermove', onMove)
     return () => {
@@ -89,12 +98,21 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
   const open = idle || shown
 
   return (
+    <>
+    {/* Above every window, so it still sees the pointer when an iframe owns
+        the rest of the screen. Gone once the dock is up. */}
+    {!open && (
+      <div
+        onPointerEnter={reveal}
+        style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 4, zIndex: 10000 }}
+      />
+    )}
     <div
       onPointerEnter={reveal}
       onPointerLeave={scheduleHide}
       style={{ pointerEvents: open ? 'auto' : 'none' }}
       className={`absolute bottom-0 inset-x-0 h-14 flex items-end justify-center pb-2 z-[9999]
-                  transition-transform duration-200 ease-out
+                  transition-transform duration-150 ease-out
                   ${open ? 'translate-y-0' : 'translate-y-[calc(100%-2px)]'}`}>
       <div className="flex items-center gap-2 px-3 py-2 rounded-2xl
                       bg-desk-panel/80 backdrop-blur-xl border border-desk-line
@@ -138,5 +156,6 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
         ))}
       </div>
     </div>
+    </>
   )
 }
