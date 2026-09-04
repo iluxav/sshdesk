@@ -3,7 +3,7 @@ import { useFw } from '../wm/host'
 import { Icon } from '../wm/Icon'
 import { declarations, resolve, configKey, setLayers, layerFor, localLayer,
          type TokenDecl, type Layer } from '../fw/tokens'
-import { iconPacks } from '../fw/icons'
+import { searchIcons, iconCount } from '../fw/icons'
 import { applyTheme } from '../fw/theme'
 
 /**
@@ -176,6 +176,7 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
 
           {picking && (
             <IconPicker
+              current={resolve(picking, host).value}
               onPick={v => {
                 const name = picking.slice(picking.indexOf('.') + 1)
                 const decl = tokens[name]
@@ -198,35 +199,85 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
   )
 }
 
-/** Grid of every icon in every installed pack, plus a few glyph escapes. */
-function IconPicker({ onPick, onClose }: { onPick: (v: string) => void; onClose: () => void }) {
-  const packs = iconPacks()
+/**
+ * Icon browser.
+ *
+ * Search-driven rather than a wall of everything: the library pack alone is
+ * over 2000 icons, so results are ranked (exact name, then prefix, then
+ * substring) and capped. Symbols are injected as they are drawn, so browsing
+ * costs only what is on screen.
+ */
+function IconPicker({ current, onPick, onClose }: {
+  current: string
+  onPick: (v: string) => void
+  onClose: () => void
+}) {
+  const [q, setQ] = useState('')
+  const [glyph, setGlyph] = useState('')
+  const results = useMemo(() => searchIcons(q, 400), [q])
+  const total = iconCount()
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
          onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
-        className="w-[520px] max-h-[70%] overflow-auto rounded-lg border border-desk-line
-                   bg-desk-panel p-3 shadow-2xl">
-        {packs.map(pack => (
-          <div key={pack.name} className="mb-3">
-            <div className="text-[11px] text-desk-dim mb-1">
-              {pack.name}{pack.bundled ? ' · bundled' : ''}
-            </div>
-            <div className="grid grid-cols-10 gap-1">
-              {Object.keys(pack.icons).map(name => {
-                const id = `${pack.name}:${name}`
-                return (
-                  <button key={id} title={id} onClick={() => onPick(id)}
-                    className="flex items-center justify-center h-9 rounded hover:bg-white/10">
-                    <Icon id={id} size={18} />
-                  </button>
-                )
-              })}
-            </div>
+        className="w-[600px] h-[70%] flex flex-col rounded-lg border border-desk-line
+                   bg-desk-panel shadow-2xl overflow-hidden">
+
+        <div className="flex items-center gap-2 p-3 border-b border-desk-line shrink-0">
+          <Icon id="desk:search" size={14} className="text-desk-dim" />
+          <input
+            autoFocus
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Escape') onClose()
+              if (e.key === 'Enter' && results[0]) onPick(results[0])
+            }}
+            placeholder={`Search ${total.toLocaleString()} icons…`}
+            className="flex-1 px-2 py-1 text-xs rounded border border-desk-line bg-desk-bg
+                       outline-none focus:border-desk-accent" />
+          <span className="text-[11px] text-desk-dim tabular-nums">
+            {results.length}{results.length === 400 ? '+' : ''}
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-auto p-2">
+          <div className="grid grid-cols-12 gap-1">
+            {results.map(id => (
+              <button
+                key={id}
+                title={id}
+                onClick={() => onPick(id)}
+                className={`flex items-center justify-center h-9 rounded hover:bg-white/10
+                  ${id === current ? 'ring-1 ring-desk-accent bg-desk-accent/15' : ''}`}>
+                <Icon id={id} size={18} />
+              </button>
+            ))}
           </div>
-        ))}
-        <div className="text-[11px] text-desk-dim">
-          Emoji work too — type one into the field instead of picking here.
+          {!results.length && (
+            <p className="p-6 text-center text-xs text-desk-dim">
+              nothing matches “{q}”
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 p-2 border-t border-desk-line shrink-0">
+          <span className="text-[11px] text-desk-dim">or an emoji:</span>
+          <input
+            value={glyph}
+            onChange={e => setGlyph(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && glyph.trim() && onPick(glyph.trim())}
+            placeholder="📁"
+            className="w-16 px-2 py-1 text-xs rounded border border-desk-line bg-desk-bg
+                       outline-none focus:border-desk-accent" />
+          <button
+            disabled={!glyph.trim()}
+            onClick={() => onPick(glyph.trim())}
+            className="text-[11px] text-desk-dim hover:text-desk-fg disabled:opacity-30">use</button>
+          <span className="ml-auto text-[11px] text-desk-dim font-mono truncate max-w-[45%]">
+            {current || '—'}
+          </span>
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { hasIcon, symbolId } from '../fw/icons'
+import { ensureSymbol, symbolId } from '../fw/icons'
 import { value as tokenValue } from '../fw/tokens'
 
 /**
@@ -27,7 +27,10 @@ export function Icon({ token, id, host, size = 16, className, title, fallback }:
   const shown = v || fallback || ''
   if (!shown) return null
 
-  if (shown.includes(':') && hasIcon(shown)) {
+  // Injected here rather than in an effect so the <use> resolves on first
+  // paint. It is an idempotent write to a detached sprite outside React's
+  // tree, which is the trade for not flashing an empty box on every icon.
+  if (shown.includes(':') && ensureSymbol(shown)) {
     return (
       <svg
         width={size} height={size} className={className} aria-hidden={!title}

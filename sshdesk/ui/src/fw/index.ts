@@ -1,7 +1,7 @@
 import type { DirListing, FileRead, SavedConn, ServerTime, Snapshot } from './types'
 export * from './types'
 export * from './tokens'
-export { loadIconPacks, iconPacks, hasIcon } from './icons'
+export { loadIconPacks, iconPacks, hasIcon, searchIcons, iconCount, ensureSymbol } from './icons'
 export { applyTheme } from './theme'
 
 const invoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> =>

@@ -17,6 +17,19 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 pub const DEFAULT_PACK: &str = "desk";
+pub const LIBRARY_PACK: &str = "lucide";
+
+/// The full Lucide set (ISC, see assets/icons/LICENSE.lucide), packed as one
+/// blob rather than 2066 `include_str!` calls — same bytes, a compile that
+/// finishes, and one file to update.
+const LUCIDE: &str = include_str!("../assets/icons/lucide.pack");
+
+fn lucide() -> BTreeMap<String, String> {
+    LUCIDE.split('\u{1e}')
+        .filter_map(|rec| rec.split_once('\n'))
+        .map(|(name, svg)| (name.to_string(), sanitize(svg)))
+        .collect()
+}
 
 const BUNDLED: &[(&str, &str)] = &[
     ("app", include_str!("../assets/icons/desk/app.svg")),
@@ -171,6 +184,13 @@ pub fn load() -> Vec<Pack> {
         }
     }
     packs.insert(0, bundled);
+
+    // The library goes last: a curated name should win over the same name in a
+    // 2000-icon set, and callers scanning packs in order find `desk` first.
+    let library = lucide();
+    if !library.is_empty() {
+        packs.push(Pack { name: LIBRARY_PACK.into(), icons: library, bundled: true });
+    }
     packs
 }
 
@@ -229,6 +249,22 @@ mod tests {
                     || out.contains("<rect") || out.contains("<ellipse"),
                     "{name} lost all geometry: {out}");
             assert!(out.contains("currentColor"), "{name} lost theming");
+        }
+    }
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+
+    #[test]
+    fn the_library_pack_parses_and_survives_sanitising() {
+        let icons = lucide();
+        assert!(icons.len() > 1500, "only {} icons", icons.len());
+        for name in ["folder", "file", "terminal", "settings", "search"] {
+            let svg = icons.get(name).unwrap_or_else(|| panic!("{name} missing"));
+            assert!(svg.contains("currentColor"), "{name} lost theming");
+            assert!(svg.contains("viewBox"), "{name} lost its viewBox");
         }
     }
 }
