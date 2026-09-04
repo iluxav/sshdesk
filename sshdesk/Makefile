@@ -20,8 +20,23 @@ run: kill build
 		&& echo "✓ running — check your screen" \
 		|| { echo "✗ crashed:"; cat /tmp/sshdesk.log; exit 1; }
 
+## lint-plugins: catch mistakes that are fatal at runtime
+#
+# `style="..."` is the one worth a build failure: html`` produces React
+# elements, a style string throws React error #62, and that unmounts the app.
+# It looks like ordinary HTML, so it is easy to write and easy to miss.
+lint-plugins:
+	@bad=$$(grep -rn 'style="' plugins/*/index.js plugins/*/src/*.jsx 2>/dev/null || true); \
+	if [ -n "$$bad" ]; then \
+		echo "✗ style must be an object, not a string (React error #62):"; \
+		echo "$$bad"; \
+		echo "  use style=\$${{ padding: 16 }} or a class in style.css"; \
+		exit 1; \
+	fi; \
+	echo "✓ plugins lint clean"
+
 ## plugins: build any plugin that has its own build step (JSX/TS)
-plugins:
+plugins: lint-plugins
 	@for d in plugins/*/; do \
 		if [ -f "$$d/package.json" ]; then \
 			echo "→ building plugin $$(basename $$d)"; \

@@ -166,9 +166,9 @@ export function createApp({ React, html, api, fw }) {
     if (url) {
       return html`
         <iframe
+          class="vsc-frame"
           src=${url}
           title="VS Code"
-          style="width:100%;height:100%;border:0;display:block;background:var(--color-desk-bg)"
           allow="clipboard-read; clipboard-write" />`
     }
 

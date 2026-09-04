@@ -213,6 +213,20 @@ compiles to `React.createElement`, which resolves to the injected `React`:
 Never `import React from 'react'` — the classic transform picks up the `React`
 you destructured from `ctx`, and the plugin ships no React of its own.
 
+### `style` takes an object, never a string
+
+`html` builds React elements, so this throws where plain HTML would not:
+
+```js
+html`<div style="padding:16px">…</div>`      // React error #62
+html`<div style=${{ padding: 16 }}>…</div>`  // fine
+html`<div class="my-pad">…</div>`            // better — put it in style.css
+```
+
+The error is real and fatal: it unmounts your app. sshdesk catches it per
+window rather than letting it take the desktop down, but the window still shows
+a stack trace instead of your app.
+
 ### Styling: use `style.css`, not Tailwind
 
 Tailwind generates classes by scanning source **at build time**, so a plugin
@@ -287,7 +301,7 @@ export function createApp({ React, html, api }) {
   return function Uptime() {
     const [text, setText] = React.useState('…')
     React.useEffect(() => { api.read().then(setText).catch(e => setText(String(e))) }, [])
-    return html`<div style="padding:16px">${text}</div>`
+    return html`<div style=${{ padding: 16 }}>${text}</div>`
   }
 }
 ```
