@@ -20,7 +20,7 @@
  *   "files.row_hover" = "#ffffff14"
  */
 
-export type TokenType = 'icon' | 'color' | 'length'
+export type TokenType = 'icon' | 'color' | 'length' | 'image'
 
 export interface TokenDecl {
   type: TokenType
@@ -64,7 +64,8 @@ export function declOf(id: string): TokenDecl | undefined {
 
 /** Where a token is stored in the config file. */
 export function configKey(id: string, type: TokenType): string {
-  return (type === 'icon' ? 'icons.' : 'theme.') + id
+  const section = type === 'icon' ? 'icons.' : type === 'image' ? 'images.' : 'theme.'
+  return section + id
 }
 
 export function setConfig(next: Flat) {

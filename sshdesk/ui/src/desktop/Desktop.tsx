@@ -3,9 +3,10 @@ import { useWM, nextId } from '../wm/store'
 import { Window } from '../wm/Window'
 import { HostScope } from '../wm/host'
 import { Requires } from '../wm/Requires'
+import { DesktopFiles } from './DesktopFiles'
 import { AppBoundary } from '../wm/AppBoundary'
 import { declareCoreTokens } from './tokens'
-import { onTokensChanged, setConfig } from '../fw/tokens'
+import { onTokensChanged, setConfig, value as tokenValue } from '../fw/tokens'
 import { loadIconPacks } from '../fw/icons'
 import { applyTheme } from '../fw/theme'
 import { APPS } from './registry'
@@ -23,7 +24,9 @@ export function Desktop() {
   const [hosts, setHosts] = useState<string[]>([])
   // Re-rendering on theme change keeps icon tokens live without every consumer
   // subscribing individually.
-  const [, bumpTheme] = useState(0)
+  const [themeRev, bumpTheme] = useState(0)
+  /** The desktop picture, resolved from a local path into a data URL. */
+  const [wallpaper, setWallpaper] = useState('')
   /**
    * The focused pane. Each connected machine gets its own column, so where a
    * window *is* on screen tells you which machine it acts on — no mode to
@@ -61,6 +64,18 @@ export function Desktop() {
     applyTheme()
     bumpTheme(n => n + 1)
   }), [])
+
+  // Re-read whenever the token changes. A path that no longer resolves leaves
+  // the plain background rather than a broken image.
+  useEffect(() => {
+    const path = tokenValue('desk.wallpaper')
+    if (!path) { setWallpaper(''); return }
+    let live = true
+    fw.wallpaper(path)
+      .then(url => { if (live) setWallpaper(url) })
+      .catch(e => { if (live) { setWallpaper(''); console.warn('wallpaper:', e) } })
+    return () => { live = false }
+  }, [themeRev])
 
   useEffect(() => { fw.ui._installDialogs(dlg) }, [dlg])
   useEffect(() => onPluginsChanged(() => bumpPlugins(n => n + 1)), [])
@@ -143,6 +158,15 @@ export function Desktop() {
 
       {/* One column per machine. Windows are absolutely positioned inside their
           own pane, so a window can never drift onto another machine's half. */}
+      {/* The picture sits under everything, including the menu bar, which is
+          translucent so it picks the image up. */}
+      {wallpaper && (
+        <div
+          aria-hidden
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none"
+          style={{ backgroundImage: `url(${wallpaper})` }} />
+      )}
+
       {/* top-8 clears the menu bar; bottom-0 because the dock hides itself and
           floats over the desktop rather than reserving a strip of it. */}
       <div className="absolute inset-0 top-8 bottom-0 flex">
@@ -167,13 +191,7 @@ export function Desktop() {
                 </div>
               )}
 
-              {mine.length === 0 && (
-                <div className="absolute inset-0 grid place-items-center pointer-events-none">
-                  <p className="text-desk-dim text-xs">
-                    {focused ? 'Open an app from the dock.' : 'click to focus'}
-                  </p>
-                </div>
-              )}
+              <DesktopFiles host={h} active={focused} />
 
               {mine.map(w => {
                 const app = APPS.find(a => a.id === w.appId)

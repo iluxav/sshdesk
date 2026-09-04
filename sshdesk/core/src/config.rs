@@ -139,6 +139,13 @@ pub fn validate(key: &str, value: &str) -> std::result::Result<(), String> {
         return if is_icon(value) { Ok(()) }
             else { Err(format!("not an icon id or glyph: {value:?}")) }
     }
+    if key.starts_with("images.") {
+        // A local path on this Mac, only ever opened for reading and only by
+        // this process. Empty and control characters are the useful checks.
+        return if !value.is_empty() && value.len() < 4096
+            && !value.contains(|c: char| c.is_control()) { Ok(()) }
+            else { Err("not a usable file path".into()) }
+    }
     if key.starts_with("theme.") {
         return if is_color(value) || is_length(value) { Ok(()) }
             else { Err(format!("not a colour or length: {value:?}")) }

@@ -13,14 +13,33 @@ import { declareTokens } from '../fw/tokens'
 
 export function declareCoreTokens() {
   declareTokens('desk', {
-    bg:     { type: 'color', default: '#0f1116', label: 'Background' },
-    panel:  { type: 'color', default: '#1a1d24', label: 'Panel' },
-    line:   { type: 'color', default: '#2b2f38', label: 'Divider' },
-    fg:     { type: 'color', default: '#e6e8ec', label: 'Text' },
-    dim:    { type: 'color', default: '#8b93a1', label: 'Muted text' },
-    accent: { type: 'color', default: '#60a5fa', label: 'Accent' },
-    ok:     { type: 'color', default: '#4ade80', label: 'Success' },
-    bad:    { type: 'color', default: '#f87171', label: 'Error' },
+    // The palette plugins already style against.
+    bg:        { type: 'color', default: '#0f1116', label: 'Background' },
+    panel:     { type: 'color', default: '#1a1d24', label: 'Panel' },
+    line:      { type: 'color', default: '#2b2f38', label: 'Divider' },
+    fg:        { type: 'color', default: '#e6e8ec', label: 'Text' },
+    dim:       { type: 'color', default: '#8b93a1', label: 'Muted text' },
+    accent:    { type: 'color', default: '#60a5fa', label: 'Accent' },
+    ok:        { type: 'color', default: '#4ade80', label: 'Success' },
+    bad:       { type: 'color', default: '#f87171', label: 'Error' },
+    warn:      { type: 'color', default: '#fbbf24', label: 'Warning' },
+
+    // Surfaces, so the chrome can be retinted without disturbing the palette.
+    // The alpha is deliberate — these sit over the wallpaper.
+    menubar:   { type: 'color', default: '#ffffff12', label: 'Menu bar' },
+    dock:      { type: 'color', default: '#1a1d24cc', label: 'Dock' },
+    titlebar:  { type: 'color', default: '#ffffff0a', label: 'Window title bar' },
+    border:    { type: 'color', default: '#2b2f38',   label: 'Window border' },
+    selection: { type: 'color', default: '#60a5fa4d', label: 'Selection' },
+
+    radius:    { type: 'length', default: '12px', label: 'Window corners' },
+
+    /**
+     * A file on this Mac, read once into a data URL rather than served over
+     * file:// — it is one image chosen once, and this grants the webview no
+     * filesystem access it would not otherwise have.
+     */
+    wallpaper: { type: 'image', default: '', label: 'Desktop picture' },
   })
 
   declareTokens('files', {

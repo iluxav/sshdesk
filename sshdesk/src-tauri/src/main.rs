@@ -278,6 +278,28 @@ fn upload_files(
     })
 }
 
+/// Read a local image as a data URL, for the desktop background.
+///
+/// A data URL rather than a file:// path or the asset protocol: the wallpaper
+/// is one image chosen once, and this avoids granting the webview filesystem
+/// access it needs for nothing else.
+#[tauri::command]
+fn wallpaper_data(path: String) -> Result<String, String> {
+    const MAX: u64 = 24 * 1024 * 1024;
+    let meta = std::fs::metadata(&path).map_err(|e| format!("{path}: {e}"))?;
+    if !meta.is_file() { return Err(format!("{path} is not a file")) }
+    if meta.len() > MAX {
+        return Err(format!("{} is {:.0} MB — the limit is {} MB",
+            path, meta.len() as f64 / 1e6, MAX / 1_000_000))
+    }
+    let mime = sshdesk_core::mime_of(&path);
+    if !mime.starts_with("image/") {
+        return Err(format!("{path} is not an image sshdesk recognises"))
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(format!("data:{mime};base64,{}", sshdesk_core::b64encode(&bytes)))
+}
+
 // ---- configuration ------------------------------------------------------
 
 /// The config file. Defaults are not included: they are declared by app
@@ -846,6 +868,7 @@ mod tests {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
+        .plugin(tauri_plugin_dialog::init())
         // Log OS drag-drop at the Rust boundary. If files land here but nothing
         // happens in the UI, the problem is the frontend hit test; if nothing
         // reaches here at all, it is the window config or the OS. Without this
@@ -881,7 +904,7 @@ fn main() {
             connect, clock, disconnect, snapshot, service_action, kill_process,
             systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
             watch_units, stage_for_drag, upload_files,
-            config_load, config_set, config_path, icon_packs, read_binary,
+            config_load, config_set, config_path, icon_packs, read_binary, wallpaper_data,
             pkg_backend, pkg_search, pkg_installed, pkg_updates, pkg_details,
             pkg_install, pkg_remove, pkg_refresh,
             deps_probe, deps_install, deps_remove, deps_installed,

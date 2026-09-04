@@ -47,6 +47,8 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
   const [, bump] = useState(0)
   const [picking, setPicking] = useState<string | null>(null)
   const [deps, setDeps] = useState<{ name: string; size: number }[] | null>(null)
+  /** Thumbnails for image tokens, keyed by path. */
+  const [preview, setPreview] = useState<Record<string, string>>({})
   const host = fw.host.current()
 
   useEffect(() => { setTitle?.('Settings') }, [setTitle])
@@ -55,6 +57,21 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
   const tokens = useMemo(
     () => apps.find(([id]) => id === section)?.[1] ?? {},
     [apps, section])
+
+  // Resolve thumbnails for whatever image tokens the current section declares.
+  useEffect(() => {
+    let live = true
+    for (const [name, decl] of Object.entries(tokens)) {
+      if (decl.type !== 'image') continue
+      const path = resolve(`${section}.${name}`).value
+      if (!path || preview[path] !== undefined) continue
+      fw.wallpaper(path)
+        .then(url => { if (live) setPreview(p => ({ ...p, [path]: url })) })
+        .catch(() => { if (live) setPreview(p => ({ ...p, [path]: '' })) })
+    }
+    return () => { live = false }
+  }, [fw, tokens, section, preview])
+
 
   // Re-read to confirm what landed. The optimistic update in `write` has
   // already moved the UI, so a hiccup here cannot leave "saved" on screen
@@ -181,7 +198,34 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  {decl.type === 'icon' ? (
+                  {decl.type === 'image' ? (
+                    <div className="flex items-center gap-2">
+                      {r.value && (
+                        <span className="w-10 h-6 rounded border border-desk-line overflow-hidden
+                                         bg-desk-bg shrink-0">
+                          <img src={preview[r.value] ?? ''} alt=""
+                               className="w-full h-full object-cover" />
+                        </span>
+                      )}
+                      <button
+                        onClick={async () => {
+                          const { open } = await import('@tauri-apps/plugin-dialog')
+                          const picked = await open({
+                            multiple: false, directory: false,
+                            title: 'Choose a desktop picture',
+                            filters: [{ name: 'Images',
+                              extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'heic'] }],
+                          })
+                          if (typeof picked === 'string') write(id, decl, picked)
+                        }}
+                        className="px-2 py-1 text-xs rounded border border-desk-line
+                                   hover:bg-white/5">choose…</button>
+                      <span className="text-[11px] text-desk-dim truncate max-w-[14rem]"
+                            title={r.value}>
+                        {r.value ? r.value.split('/').pop() : 'none'}
+                      </span>
+                    </div>
+                  ) : decl.type === 'icon' ? (
                     <button
                       onClick={() => setPicking(picking === id ? null : id)}
                       className="flex items-center gap-2 px-2 py-1 rounded border border-desk-line

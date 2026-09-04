@@ -87,14 +87,17 @@ export function Window({ win, children }: { win: Win; children: ReactNode }) {
   return (
     <div
       ref={el}
+      data-window
       onPointerDown={focus}
-      style={{ left: win.x, top: win.y, width: win.w, height: win.h, zIndex: win.z }}
+      style={{ left: win.x, top: win.y, width: win.w, height: win.h, zIndex: win.z,
+               borderRadius: 'var(--color-desk-radius, 12px)',
+               borderColor: 'var(--color-desk-border)' }}
       // The app class is what the generated theme selectors hook onto, so an
       // app's tokens apply to its own windows. data-host is kept for
       // debugging; it no longer drives styling.
       data-host={win.host}
-      className={`absolute flex flex-col rounded-xl overflow-hidden app-${win.appId}
-                 bg-desk-panel border border-desk-line shadow-2xl shadow-black/60`}
+      className={`absolute flex flex-col overflow-hidden app-${win.appId}
+                 bg-desk-panel border shadow-2xl shadow-black/60`}
     >
       <div
         onPointerDown={startDrag}

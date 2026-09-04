@@ -89,8 +89,9 @@ export function MenuBar({ hosts, active, onSwitch, onAdd, onDisconnect, onReload
       // this bar instead of occupying a row of their own. The left padding is
       // their space; dragging the bar moves the window, as a title bar would.
       data-tauri-drag-region
+      style={{ background: 'var(--color-desk-menubar)' }}
       className="absolute top-0 inset-x-0 h-8 z-[9998] flex items-center gap-3 pl-[78px] pr-3 text-xs
-                 bg-white/[0.07] backdrop-blur-2xl backdrop-saturate-150
+                 backdrop-blur-2xl backdrop-saturate-150
                  border-b border-white/10 shadow-[0_1px_0_rgba(255,255,255,0.05)_inset]"
     >
       <button

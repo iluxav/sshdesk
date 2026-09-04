@@ -114,9 +114,11 @@ export function Dock({ host, paneCount }: { host: string; paneCount: number }) {
       className={`absolute bottom-0 inset-x-0 h-14 flex items-end justify-center pb-2 z-[9999]
                   transition-transform duration-150 ease-out
                   ${open ? 'translate-y-0' : 'translate-y-[calc(100%-2px)]'}`}>
-      <div className="flex items-center gap-2 px-3 py-2 rounded-2xl
-                      bg-desk-panel/80 backdrop-blur-xl border border-desk-line
-                      shadow-2xl shadow-black/50">
+      <div
+        style={{ background: 'var(--color-desk-dock)',
+                 borderColor: 'var(--color-desk-border)' }}
+        className="flex items-center gap-2 px-3 py-2 rounded-2xl
+                   backdrop-blur-xl border shadow-2xl shadow-black/50">
         {APPS.map(app => {
           const wins = state.wins.filter(w => w.appId === app.id && w.host === host)
           return (

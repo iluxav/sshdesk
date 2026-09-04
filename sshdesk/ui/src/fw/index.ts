@@ -334,6 +334,9 @@ function makeApi(getHost: () => string) {
    * Window management for apps. The desktop installs the real implementation
    * at mount; fw stays framework-agnostic and holds only the hook.
    */
+  /** Read a local image as a data URL, for the desktop picture. */
+  wallpaper: (path: string) => invoke<string>('wallpaper_data', { path }),
+
   /** The sshdesk window itself. */
   win: {
     minimize: async () => {
