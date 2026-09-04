@@ -12,10 +12,17 @@ macro_rules! ok {
     ($($a:tt)*) => { println!("  \x1b[32m✓\x1b[0m {}", format!($($a)*)) };
 }
 macro_rules! bad {
-    ($($a:tt)*) => {{ println!("  \x1b[31m✗\x1b[0m {}", format!($($a)*)); FAILED.with(|f| f.set(f.get() + 1)); }};
+    ($($a:tt)*) => {{
+        let m = format!($($a)*);
+        println!("  \x1b[31m✗\x1b[0m {m}");
+        // Also recorded, so an intermittent failure can be identified from the
+        // tail of a log without scrolling back through sixty passing lines.
+        FAILURES.with(|f| f.borrow_mut().push(m));
+    }};
 }
 
-thread_local!(static FAILED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+thread_local!(static FAILURES: std::cell::RefCell<Vec<String>> =
+    const { std::cell::RefCell::new(Vec::new()) });
 
 fn main() {
     let target = std::env::args().nth(1).unwrap_or_else(|| {
@@ -74,10 +81,16 @@ fn main() {
     if let Some(t) = tmp { let _ = remove(&mut h, &t, true); }
     h.disconnect();
 
-    let failed = FAILED.with(|f| f.get());
+    let failures = FAILURES.with(|f| f.borrow().clone());
     println!();
-    if failed == 0 { println!("\x1b[32mall checks passed\x1b[0m\n") }
-    else { println!("\x1b[31m{failed} check(s) failed\x1b[0m\n"); std::process::exit(1) }
+    if failures.is_empty() {
+        println!("\x1b[32mall checks passed\x1b[0m\n");
+    } else {
+        println!("\x1b[31m{} check(s) failed:\x1b[0m", failures.len());
+        for m in &failures { println!("  \x1b[31m·\x1b[0m {m}") }
+        println!();
+        std::process::exit(1)
+    }
 }
 
 fn section(name: &str) { println!("\n\x1b[1m{name}\x1b[0m"); }
