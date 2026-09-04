@@ -732,6 +732,47 @@ pub fn service_action(h: &mut Host, unit: &str, action: &str, password: &str) ->
 }
 
 
+/// Best-effort content type from a file name.
+///
+/// Extension only, deliberately: it costs nothing, and the alternative — a
+/// round trip to sniff magic bytes — would be paid on every file just to
+/// decide which window to open. A wrong guess opens the editor, which is the
+/// same place an unknown type goes anyway.
+pub fn mime_of(path: &str) -> &'static str {
+    let ext = path.rsplit('/').next().unwrap_or("")
+        .rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" | "jpe" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" | "cur" => "image/x-icon",
+        "svg" => "image/svg+xml",
+        "tif" | "tiff" => "image/tiff",
+        "heic" => "image/heic",
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "toml" => "text/toml",
+        "yaml" | "yml" => "text/yaml",
+        "md" | "markdown" => "text/markdown",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" => "text/typescript",
+        "rs" => "text/rust",
+        "py" => "text/x-python",
+        "sh" | "bash" | "zsh" => "text/x-shellscript",
+        "c" | "h" => "text/x-c",
+        "go" => "text/x-go",
+        "sql" => "text/x-sql",
+        "log" | "txt" | "conf" | "cfg" | "ini" | "service" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
 pub fn b64encode(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -771,4 +812,36 @@ pub fn server_time(h: &mut Host) -> Result<ServerTime> {
     let hh: i32 = z[1..3].parse().unwrap_or(0);
     let mm: i32 = z[3..5].parse().unwrap_or(0);
     Ok(ServerTime { epoch, offset_minutes: sign * (hh * 60 + mm), zone: parts[2].to_string() })
+}
+
+#[cfg(test)]
+mod mime_tests {
+    use super::mime_of;
+
+    #[test]
+    fn images_are_recognised_case_insensitively() {
+        for (path, want) in [
+            ("/home/x/a.png", "image/png"),
+            ("/home/x/A.PNG", "image/png"),
+            ("photo.JPEG", "image/jpeg"),
+            ("icon.svg", "image/svg+xml"),
+            ("shot.webp", "image/webp"),
+        ] {
+            assert_eq!(mime_of(path), want, "{path}");
+        }
+    }
+
+    #[test]
+    fn unknown_and_extensionless_fall_through_to_the_editor() {
+        for path in ["/etc/hosts", "Makefile", "archive.tar.zst", "/a.b/noext"] {
+            assert_eq!(mime_of(path), "application/octet-stream", "{path}");
+        }
+    }
+
+    #[test]
+    fn a_dot_in_a_directory_name_is_not_an_extension() {
+        // The extension is taken from the last path segment, so this is not
+        // "image/png" just because a parent directory is called `v1.png`.
+        assert_eq!(mime_of("/srv/v1.png/README"), "application/octet-stream");
+    }
 }

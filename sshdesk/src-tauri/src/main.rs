@@ -433,6 +433,36 @@ fn download_file(
     })
 }
 
+/// Raw bytes, base64'd for the IPC hop.
+///
+/// Separate from `read_text` because that one classifies and returns a string;
+/// an image needs the bytes intact. The cap is generous but real — a webview
+/// holding a 200 MB data URL helps nobody.
+#[derive(Serialize)]
+struct BinaryRead {
+    b64: String,
+    size: u64,
+    truncated: bool,
+    /// Guessed from the extension, for the data URL the viewer builds.
+    mime: String,
+}
+
+#[tauri::command]
+fn read_binary(
+    hosts: State<Hosts>,
+    target: String,
+    path: String,
+    max_bytes: Option<usize>,
+) -> Result<BinaryRead, String> {
+    let max = max_bytes.unwrap_or(32 * 1024 * 1024).min(64 * 1024 * 1024);
+    let mime = sshdesk_core::mime_of(&path).to_string();
+    with_host(&hosts, &target, |h| {
+        let size = h.sftp()?.stat(&path)?.size;
+        let (bytes, truncated) = h.sftp()?.read(&path, max)?;
+        Ok(BinaryRead { b64: sshdesk_core::b64encode(&bytes), size, truncated, mime })
+    })
+}
+
 #[tauri::command]
 fn write_text(hosts: State<Hosts>, target: String, path: String, content: String) -> Result<(), String> {
     with_host(&hosts, &target, |h| write_file(h, &path, &content))
@@ -677,7 +707,7 @@ fn main() {
             connect, clock, disconnect, snapshot, service_action, kill_process,
             systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
             watch_units, stage_for_drag, upload_files,
-            config_load, config_set, config_path, icon_packs,
+            config_load, config_set, config_path, icon_packs, read_binary,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,

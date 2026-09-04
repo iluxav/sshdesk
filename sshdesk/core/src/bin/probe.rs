@@ -50,6 +50,9 @@ fn main() {
     section("config");
     probe_config(&mut h);
 
+    section("binary read — what the image viewer rides on");
+    probe_binary(&mut h);
+
     section("D-Bus — the system lane");
     probe_dbus(&mut h);
 
@@ -285,6 +288,58 @@ fn probe_config(_h: &mut Host) {
         None => { let _ = std::fs::remove_file(&path); }
     }
     ok!("restored the original config");
+}
+
+/// A real image, uploaded and read back. Asserted on the bytes, because an
+/// image that decodes to the wrong pixels still "loads" successfully.
+fn probe_binary(h: &mut Host) {
+    let home = match h.sftp().and_then(|s| s.home()) {
+        Ok(v) => v, Err(e) => { bad!("home: {e}"); return }
+    };
+    let remote = sshdesk_core::sftp::join(&home, ".sshdesk-probe.png");
+
+    // A 1x1 PNG, small enough to inline and still a genuine decodable file.
+    const PNG: &[u8] = &[
+        0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a, 0,0,0,0x0d,0x49,0x48,0x44,0x52,
+        0,0,0,1, 0,0,0,1, 8,6,0,0,0, 0x1f,0x15,0xc4,0x89,
+        0,0,0,0x0a,0x49,0x44,0x41,0x54, 0x78,0x9c,0x63,0,1,0,0,5,0,1,
+        0x0d,0x0a,0x2d,0xb4, 0,0,0,0,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82,
+    ];
+
+    let local = std::env::temp_dir().join("sshdesk-probe.png");
+    if std::fs::write(&local, PNG).is_err() { bad!("could not stage a local png"); return }
+    if let Err(e) = h.sftp().and_then(|s| s.upload(&local.to_string_lossy(), &remote)) {
+        bad!("upload: {e}"); return
+    }
+
+    match sshdesk_core::mime_of(&remote) {
+        "image/png" => ok!("mime_of routes it to the viewer"),
+        other => bad!("mime_of said {other}"),
+    }
+
+    match h.sftp().and_then(|s| s.read(&remote, 1 << 20)) {
+        Ok((bytes, truncated)) => {
+            if bytes == PNG && !truncated {
+                ok!("{} bytes read back identical, PNG signature intact", bytes.len());
+            } else {
+                bad!("bytes differ: got {} of {}", bytes.len(), PNG.len());
+            }
+            let b64 = sshdesk_core::b64encode(&bytes);
+            // The viewer builds `data:<mime>;base64,<this>`, so it has to be
+            // exactly what a browser will accept.
+            if b64.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+                && b64.len() % 4 == 0 {
+                ok!("base64 is well-formed for a data URL ({} chars)", b64.len());
+            } else {
+                bad!("base64 is malformed: {b64}");
+            }
+        }
+        Err(e) => bad!("read: {e}"),
+    }
+
+    let _ = remove(h, &remote, false);
+    let _ = std::fs::remove_file(&local);
+    ok!("cleaned up");
 }
 
 fn probe_dbus(h: &mut Host) {

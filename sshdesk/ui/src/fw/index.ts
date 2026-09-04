@@ -78,6 +78,10 @@ function makeApi(getHost: () => string) {
   fs: {
     list:     (path: string) => invoke<DirListing>('list_directory', { ...t(), path }),
     read:     (path: string) => invoke<FileRead>('read_text', { ...t(), path }),
+    /** Raw bytes for viewers. Text goes through `read`, which classifies. */
+    readBinary: (path: string, maxBytes?: number) =>
+      invoke<{ b64: string; size: number; truncated: boolean; mime: string }>(
+        'read_binary', { ...t(), path, maxBytes }),
     write:    (path: string, content: string) => invoke<void>('write_text', { ...t(), path, content }),
     mkdir:    (path: string) => invoke<void>('make_dir', { ...t(), path }),
     rename:   (from: string, to: string) => invoke<void>('rename_path', { ...t(), from, to }),

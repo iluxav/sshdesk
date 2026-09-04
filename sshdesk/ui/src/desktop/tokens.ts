@@ -44,6 +44,10 @@ export function declareCoreTokens() {
     code: { type: 'icon', default: 'desk:file-code', label: 'Source file' },
   })
 
+  declareTokens('image', {
+    app: { type: 'icon', default: 'desk:file', label: 'App icon' },
+  })
+
   declareTokens('settings', {
     app: { type: 'icon', default: 'desk:settings', label: 'App icon' },
   })

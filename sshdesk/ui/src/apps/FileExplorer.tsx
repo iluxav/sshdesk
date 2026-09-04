@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '../wm/Icon'
+import { handlerFor } from '../desktop/registry'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { type DirListing, type Entry } from '../fw'
 import { useFw } from '../wm/host'
@@ -191,8 +192,10 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
   const open = (e: Entry) => {
     const full = fw.path.join(cwd, e.name)
     if (e.kind === 'dir') return load(full)
-    // Files go to the editor app; it decides whether the content is text.
-    fw.ui.open('editor', { path: full })
+    // Routed by content type. Apps declare what they handle, so this does not
+    // grow a branch every time one is added; unclaimed types reach the editor,
+    // which already decides for itself whether the bytes are text.
+    fw.ui.open(handlerFor(full), { path: full })
   }
 
   /** Finder/Explorer selection: click replaces, cmd toggles, shift extends. */

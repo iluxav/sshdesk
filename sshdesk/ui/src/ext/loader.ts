@@ -14,6 +14,8 @@ interface PluginModule {
     window?: { w?: number; h?: number }
     /** Tokens this plugin owns; Settings renders an editor for each. */
     tokens?: TokenMap
+    /** Content types this plugin opens, e.g. ['application/pdf', 'text/csv']. */
+    opens?: string[]
   }
   createAdapter?: (sdk: Sdk) => Record<string, unknown>
   createApp?: (ctx: {
@@ -129,6 +131,7 @@ export async function loadPlugins(): Promise<string[]> {
         component: Component,
         w: m.window?.w ?? 860,
         h: m.window?.h ?? 540,
+        opens: m.opens,
       }
       const at = APPS.findIndex(a => a.id === def.id)
       if (at >= 0) APPS[at] = def
