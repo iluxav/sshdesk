@@ -14,7 +14,10 @@ export interface Entry {
 export interface DirListing {
   path: string
   entries: Entry[]
-  disk: string
+  /** Typed statvfs numbers — format them however the view wants. */
+  disk: { total: number; free: number; avail: number }
+  /** Server supports `copy-data`: copies never ship bytes over the wire. */
+  server_side_copy: boolean
   elapsed_ms: number
 }
 

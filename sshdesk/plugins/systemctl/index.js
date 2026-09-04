@@ -4,9 +4,10 @@
  * Convention: ~/.sshdesk/plugins/<name>/index.js exporting `manifest`,
  * `createAdapter` and `createApp`.
  *
- * The adapter is the whole JSON -> CLI -> JSON boundary. Everything above it is
- * ordinary JavaScript: the platform passes React in, so a plugin never bundles
- * its own copy and hooks keep working.
+ * Ported to tier 1: reads go over D-Bus (typed both ways, no parsing, nothing
+ * spawned on the remote), writes stay on sudo, and only the log tail still
+ * shells out. Everything above the adapter is ordinary JavaScript — the
+ * platform passes React in, so a plugin never bundles its own copy.
  */
 
 export const manifest = {
@@ -17,29 +18,10 @@ export const manifest = {
 }
 
 export function createAdapter(sdk) {
-  // Probed once per host and cached by the platform.
-  const hasJson = () =>
-    sdk.capability('systemctl-json', async exec => {
-      const r = await exec(['systemctl', '--version'])
-      const m = /systemd (\d+)/.exec(r.stdout)
-      return !!m && Number(m[1]) >= 246
-    })
+  const SYSTEMD = 'org.freedesktop.systemd1'
+  const MANAGER = '/org/freedesktop/systemd1'
 
-  /** Column form is only used on systemd < 246, where -o json does not exist. */
-  function parseColumns(stdout) {
-    return stdout.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
-      const f = line.replace(/^[●*\s]+/, '').split(/\s+/)
-      return {
-        unit: f[0] ?? '',
-        load: f[1] ?? '',
-        active: f[2] ?? '',
-        sub: f[3] ?? '',
-        description: f.slice(4).join(' '),
-      }
-    }).filter(s => s.unit.endsWith('.service'))
-  }
-
-  const UNIT = /^[A-Za-z0-9@._:\\-]+$/
+  const UNIT = /^[A-Za-z0-9@._:-]+$/
   const checkUnit = u => {
     if (!UNIT.test(u)) throw new Error(`refusing suspicious unit name: ${u}`)
     return u
@@ -47,38 +29,74 @@ export function createAdapter(sdk) {
 
   const ACTIONS = ['start', 'stop', 'restart', 'reload', 'enable', 'disable']
 
+  /** ListUnits returns a tuple per unit; these are its field positions. */
+  const NAME = 0, DESC = 1, LOAD = 2, ACTIVE = 3, SUB = 4, OBJ = 6
+
   return {
+    /**
+     * Tier 1. This replaces a capability probe (does systemd support -o json?),
+     * a JSON path, and a whole column-splitting fallback parser for older
+     * systemd — because the bus API has been the same shape the entire time.
+     * It also spawns no process on the remote, which is where the latency was.
+     */
     async list() {
-      if (await hasJson()) {
-        const r = await sdk.exec([
-          'systemctl', 'list-units', '--type=service', '--all',
-          '--no-legend', '--no-pager', '-o', 'json',
-        ])
-        if (r.code === 0 && r.stdout.trim().startsWith('[')) {
-          return JSON.parse(r.stdout)
-        }
-      }
-      const r = await sdk.exec([
-        'systemctl', 'list-units', '--type=service', '--all', '--no-legend', '--no-pager',
-      ])
-      if (r.code !== 0) throw new Error(r.stderr || 'systemctl failed')
-      return parseColumns(r.stdout)
+      const [units] = await sdk.dbus.systemd('ListUnits')
+      return units
+        .filter(u => u[NAME].endsWith('.service'))
+        .map(u => ({
+          unit: u[NAME],
+          description: u[DESC],
+          load: u[LOAD],
+          active: u[ACTIVE],
+          sub: u[SUB],
+          path: u[OBJ],
+        }))
     },
 
-    /** exit 3 means "inactive" — data, not failure. */
+    /** Typed property, so there is no exit code to reinterpret. */
     async isActive(unit) {
-      const r = await sdk.exec(['systemctl', 'is-active', checkUnit(unit)])
-      return r.stdout.trim() || (r.code === 3 ? 'inactive' : 'unknown')
+      const [path] = await sdk.dbus.systemd('GetUnit', 's', [checkUnit(unit)])
+      return await sdk.dbus.get(SYSTEMD, path, `${SYSTEMD}.Unit`, 'ActiveState')
     },
 
+    /**
+     * Deliberately mixed tiers: the facts come from typed properties, the log
+     * tail from journalctl. There is no bus API that renders a log, and
+     * pretending otherwise would mean parsing something worse.
+     */
     async status(unit) {
-      const r = await sdk.exec([
-        'systemctl', 'status', checkUnit(unit), '--no-pager', '-n', '40',
-      ])
-      // status exits 3 for a stopped unit but still prints what we want
-      return r.stdout || r.stderr
+      const name = checkUnit(unit)
+      const [path] = await sdk.dbus.systemd('GetUnit', 's', [name])
+      const props = ['Description', 'LoadState', 'ActiveState', 'SubState', 'UnitFileState']
+      const svc = ['MainPID', 'ExecMainStartTimestamp']
+
+      const head = {}
+      for (const p of props) {
+        head[p] = await sdk.dbus.get(SYSTEMD, path, `${SYSTEMD}.Unit`, p)
+      }
+      for (const p of svc) {
+        try { head[p] = await sdk.dbus.get(SYSTEMD, path, `${SYSTEMD}.Service`, p) }
+        catch { /* not a service unit */ }
+      }
+
+      const lines = [
+        `${name} - ${head.Description ?? ''}`,
+        `   Loaded: ${head.LoadState} (${head.UnitFileState ?? 'n/a'})`,
+        `   Active: ${head.ActiveState} (${head.SubState})`,
+      ]
+      if (head.MainPID) lines.push(` Main PID: ${head.MainPID}`)
+
+      // tier 3 for the log tail only
+      const r = await sdk.exec(['journalctl', '-u', name, '-n', '40', '--no-pager', '-o', 'short'])
+      return lines.join('\n') + '\n\n' + (r.stdout || r.stderr || '(no journal entries)')
     },
 
+    /**
+     * Still tier 3, and on purpose. The bus equivalent is refused by polkit
+     * unless a pkttyagent is registered for this ssh session and the call sets
+     * ALLOW_INTERACTIVE_AUTHORIZATION — machinery that would replace one line
+     * which already works. See sshdesk's dbus.rs for the full finding.
+     */
     async action(verb, unit) {
       if (!ACTIONS.includes(verb)) throw new Error(`unknown action: ${verb}`)
       const r = await sdk.sudo(['systemctl', verb, checkUnit(unit)])
@@ -88,7 +106,7 @@ export function createAdapter(sdk) {
   }
 }
 
-export function createApp({ React, html, api }) {
+export function createApp({ React, html, api, fw }) {
   const { useState, useEffect, useCallback, useMemo } = React
 
   return function Services({ setTitle }) {
@@ -108,6 +126,16 @@ export function createApp({ React, html, api }) {
     }, [])
 
     useEffect(() => { load() }, [load])
+
+    // Push, not poll. The backend holds one D-Bus subscription per host and
+    // systemd tells us when a job finishes — so starting a service in a
+    // terminal updates this list too, with no timer and no round trips.
+    useEffect(() => {
+      let live = true
+      fw.sys.watchUnits().catch(() => { /* older backend: stay manual */ })
+      const off = fw.bus.on('units:changed', () => { if (live) load() })
+      return () => { live = false; off() }
+    }, [load])
     useEffect(() => { setTitle && setTitle('Services') }, [setTitle])
 
     const rows = useMemo(() => {

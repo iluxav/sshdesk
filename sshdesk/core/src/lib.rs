@@ -217,6 +217,11 @@ impl Host {
 
     pub fn uid(&self) -> u32 { self.uid }
 
+    /// Local endpoint of the forwarded bus. Empty until `bus()` has run.
+    /// A signal watcher opens its *own* connection to this path so a blocking
+    /// read never holds the lock that every other command needs.
+    pub fn bus_path(&self) -> &str { &self.bus_sock }
+
     /// SFTP subsystem, opened on first use. This is the file lane: typed
     /// attributes, byte-safe names, server-side copy.
     pub fn sftp(&mut self) -> Result<&mut sftp::Sftp> {
@@ -457,15 +462,26 @@ pub fn list_services(h: &mut Host) -> Result<Vec<Service>> {
     Ok(v)
 }
 
-/// Subscribe to unit state changes. Costs one AddMatch, then the remote pushes
-/// — no polling, no round trips. This is what the shell layer could never do.
-pub fn watch_units(h: &mut Host) -> Result<()> {
-    h.bus()?.add_match(
-        "type='signal',sender='org.freedesktop.systemd1',\
-interface='org.freedesktop.systemd1.Manager',member='JobRemoved'")?;
-    h.bus()?.call("org.freedesktop.systemd1", "/org/freedesktop/systemd1",
-                  "org.freedesktop.systemd1.Manager", "Subscribe", &[])?;
+/// Subscribe a connection to unit lifecycle signals.
+///
+/// `Subscribe` is what makes systemd emit these at all — without it the manager
+/// stays quiet for efficiency. After this the remote pushes; there are no
+/// further round trips and no polling, which is the thing the shell lane could
+/// never do at any price.
+pub fn subscribe_units(d: &mut dbus::Dbus) -> Result<()> {
+    const M: &str = "org.freedesktop.systemd1.Manager";
+    for member in ["JobRemoved", "UnitNew", "UnitRemoved", "Reloading"] {
+        d.add_match(&format!(
+            "type='signal',sender='org.freedesktop.systemd1',interface='{M}',member='{member}'"))?;
+    }
+    d.call("org.freedesktop.systemd1", "/org/freedesktop/systemd1", M, "Subscribe", &[])?;
     Ok(())
+}
+
+/// Subscribe on the host's own connection (used by the probe).
+pub fn watch_units(h: &mut Host) -> Result<()> {
+    let d = h.bus()?;
+    subscribe_units(d)
 }
 
 /// Read any systemd manager property (Version, Architecture, NNames, ...).

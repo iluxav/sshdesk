@@ -43,6 +43,9 @@ fn main() {
     section("shell — the escape hatch");
     probe_shell(&mut h);
 
+    section("signals — the push path");
+    probe_signals(&mut h);
+
     section("latency");
     probe_latency(&mut h);
 
@@ -220,6 +223,80 @@ fn probe_shell(h: &mut Host) {
     }
 }
 
+/// Verify the push path the way the app actually uses it: a *separate*
+/// connection to the already-forwarded socket, so that blocking on a read never
+/// holds the lock every other command needs.
+///
+/// Triggering a unit job needs privileges, so instead this watches
+/// NameOwnerChanged and then causes one by opening a third connection. That
+/// exercises exactly the same machinery — subscribe, block, deliver — without
+/// touching anything on the box.
+fn probe_signals(h: &mut Host) {
+    let (sock, uid) = match h.bus() {
+        Ok(_) => (h.bus_path().to_string(), h.uid()),
+        Err(e) => { bad!("bus: {e}"); return }
+    };
+    if sock.is_empty() { bad!("bus path empty — forward did not happen"); return }
+
+    let mut watcher = match dbus::Dbus::connect(&sock, uid) {
+        Ok(d) => d,
+        Err(e) => { bad!("watcher connection: {e}"); return }
+    };
+    ok!("dedicated watcher connection {} (separate from the command connection)",
+        watcher.unique_name);
+
+    if let Err(e) = subscribe_units(&mut watcher) { bad!("subscribe_units: {e}"); return }
+    ok!("subscribed to JobRemoved / UnitNew / UnitRemoved / Reloading");
+
+    if let Err(e) = watcher.add_match(
+        "type='signal',interface='org.freedesktop.DBus',member='NameOwnerChanged'") {
+        bad!("add_match: {e}"); return
+    }
+
+    // Drain anything already queued (the watcher's own NameAcquired from Hello),
+    // so what arrives next is caused by the trigger rather than by us connecting.
+    let mut drained = 0;
+    while let Ok(Some(_)) = watcher.next_signal(Duration::from_millis(200)) {
+        drained += 1;
+        if drained > 50 { break }
+    }
+    ok!("drained {drained} queued signal(s) — the queue is now empty");
+
+    // Cause a fresh one: a new bus connection changes name ownership.
+    // Bound to a variable so it stays open — dropping it here would emit a
+    // second NameOwnerChanged and muddy what we are measuring.
+    let trigger = match dbus::Dbus::connect(&sock, uid) {
+        Ok(t) => t,
+        Err(e) => { bad!("trigger connection: {e}"); return }
+    };
+    let name = trigger.unique_name.clone();
+    ok!("opened a third connection ({name}) to cause a signal");
+
+    let t0 = Instant::now();
+    let mut seen = None;
+    while t0.elapsed() < Duration::from_secs(3) {
+        match watcher.next_signal(Duration::from_millis(500)) {
+            Ok(Some(sig)) => { seen = Some(sig); break }
+            Ok(None) => continue,
+            Err(e) => { bad!("signal read: {e}"); return }
+        }
+    }
+    match seen {
+        Some(sig) => {
+            ok!("caused signal delivered in {:.0} ms: {}.{}",
+                t0.elapsed().as_secs_f64() * 1000.0, sig.interface, sig.member);
+            let about_trigger = sig.args.iter().any(|a| a.as_str() == Some(name.as_str()));
+            if about_trigger {
+                ok!("and it is about the connection we just opened — causality confirmed");
+            } else {
+                ok!("(signal was about something else on the bus — still a live push)");
+            }
+            ok!("push path confirmed: the remote pushes, we never polled");
+        }
+        None => bad!("no signal arrived within 3s — push path is not working"),
+    }
+}
+
 fn probe_latency(h: &mut Host) {
     let mut dbus_ms = vec![];
     for _ in 0..10 {
@@ -239,12 +316,4 @@ fn probe_latency(h: &mut Host) {
     if d < s { ok!("typed lane is {:.1}x faster — the difference is the remote process spawn", s / d) }
     else { bad!("typed lane not faster ({d:.1} vs {s:.1})") }
 
-    let mut n = 0;
-    if let Ok(b) = h.bus() {
-        if let Ok(Some(sig)) = b.next_signal(Duration::from_millis(300)) {
-            n += 1;
-            ok!("received a live signal: {}.{}", sig.interface, sig.member);
-        }
-    }
-    if n == 0 { ok!("no unit changed during the probe window (expected on an idle box)") }
 }

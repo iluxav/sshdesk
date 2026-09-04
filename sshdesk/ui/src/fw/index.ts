@@ -22,6 +22,24 @@ interface Dialogs {
   alert(o: any): Promise<void>
 }
 let dialogs: Dialogs | null = null
+/**
+ * Bridge backend push events onto the local bus, once per session.
+ *
+ * The Rust side emits Tauri events from a thread reading D-Bus signals; apps
+ * should not have to know that. They just subscribe to a topic like any other.
+ */
+let bridged = false
+async function bridgeBackendEvents() {
+  if (bridged) return
+  bridged = true
+  const { listen } = await import('@tauri-apps/api/event')
+  for (const topic of ['units:changed', 'units:stopped', 'units:watching']) {
+    await listen(topic, (e: any) => {
+      listeners[topic]?.forEach(fn => { try { fn(e.payload) } catch { /* isolate */ } })
+    })
+  }
+}
+
 export const setHost = (h: string) => { host = h }
 export const getHost = () => host
 
@@ -120,6 +138,18 @@ function makeApi(getHost: () => string) {
       invoke<string>('service_action', { ...t(), unit, action, password }),
     kill: (pid: number, password = '') => invoke<string>('kill_process', { ...t(), pid, password }),
     clock: () => invoke<ServerTime>('clock', t()),
+
+    /**
+     * Ask the backend to push unit changes instead of being polled.
+     *
+     * Idempotent — one watcher per host no matter how many windows call it.
+     * Subscribe with `fw.bus.on('units:changed', fn)`; the payload carries the
+     * signal member (JobRemoved, UnitNew, ...) and its arguments.
+     */
+    watchUnits: async () => {
+      await bridgeBackendEvents()
+      return invoke<boolean>('watch_units', t())
+    },
   },
 
   /**

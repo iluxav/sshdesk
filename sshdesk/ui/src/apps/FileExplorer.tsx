@@ -407,7 +407,14 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
                       border-t border-desk-line shrink-0">
         <span>{entries.length} items</span>
         {sel.size > 0 && <span className="text-desk-fg">· {sel.size} selected</span>}
-        {d?.disk && <span>· {d.disk}</span>}
+        {d && d.disk.total > 0 && (
+          <span>· {fw.fmt.size(d.disk.avail)} free of {fw.fmt.size(d.disk.total)}</span>
+        )}
+        {d?.server_side_copy && (
+          <span title="copy-data: the server copies files itself, bytes never cross the network">
+            · server-side copy
+          </span>
+        )}
         {d && <span>· {d.elapsed_ms.toFixed(0)} ms</span>}
         {note && <span className="text-desk-ok">· {note}</span>}
 

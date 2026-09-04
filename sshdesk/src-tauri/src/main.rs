@@ -4,16 +4,21 @@ mod term;
 
 use serde::Serialize;
 use sshdesk_core::{
-    copy, dir_summary, list_dir, list_ports, list_processes, list_services, mkdir,
+    copy, list_dir, list_ports, list_processes, list_services, mkdir,
     read_file, remove, rename, resolve_path, server_time, write_file, Entry, Host, Port,
     Process, Service,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[derive(Default)]
 struct Hosts(Mutex<HashMap<String, Host>>);
+
+/// Hosts with a live signal watcher thread. Keyed by target so reconnecting a
+/// window does not stack one thread per open window.
+#[derive(Default)]
+struct Watchers(Mutex<std::collections::HashSet<String>>);
 
 /// Active local forwards, keyed by "target:remote_port" -> local_port.
 #[derive(Default)]
@@ -106,6 +111,75 @@ fn service_action(
     })
 }
 
+/// Start pushing unit changes to the UI.
+///
+/// The watcher opens its *own* connection to the already-forwarded bus socket.
+/// That matters: it blocks on read indefinitely, and sharing the Host's
+/// connection would mean holding the hosts lock forever, freezing every other
+/// command in the app.
+#[tauri::command]
+fn watch_units(
+    app: tauri::AppHandle,
+    hosts: State<Hosts>,
+    watchers: State<Watchers>,
+    target: String,
+) -> Result<bool, String> {
+    {
+        let mut w = watchers.0.lock().map_err(|e| e.to_string())?;
+        if !w.insert(target.clone()) { return Ok(false) }  // already watching
+    }
+    // Ensure the forward exists, then hand the path to the thread.
+    let (sock, uid) = match with_host(&hosts, &target, |h| {
+        h.bus()?;
+        Ok((h.bus_path().to_string(), h.uid()))
+    }) {
+        Ok(v) => v,
+        Err(e) => {
+            watchers.0.lock().ok().map(|mut w| w.remove(&target));
+            return Err(e)
+        }
+    };
+
+    let t2 = target.clone();
+    std::thread::spawn(move || {
+        let run = || -> Result<(), sshdesk_core::Error> {
+            let mut d = sshdesk_core::dbus::Dbus::connect(&sock, uid)?;
+            sshdesk_core::subscribe_units(&mut d)?;
+            let _ = app.emit("units:watching", &t2);
+            loop {
+                match d.next_signal(std::time::Duration::from_secs(60)) {
+                    // A timeout is not an error — an idle box simply has
+                    // nothing to say. Keep waiting.
+                    Ok(None) => continue,
+                    Ok(Some(sig)) => {
+                        let _ = app.emit("units:changed", UnitSignal {
+                            target: t2.clone(),
+                            member: sig.member,
+                            args: sig.args.iter().map(|v| v.to_json()).collect(),
+                        });
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        let _ = run();
+        // Connection died: drop the registration so a reconnect can re-arm.
+        use tauri::Manager;
+        if let Some(w) = app.try_state::<Watchers>() {
+            w.0.lock().ok().map(|mut s| s.remove(&t2));
+        }
+        let _ = app.emit("units:stopped", &t2);
+    });
+    Ok(true)
+}
+
+#[derive(Clone, Serialize)]
+struct UnitSignal {
+    target: String,
+    member: String,
+    args: Vec<serde_json::Value>,
+}
+
 /// Read a systemd manager property straight off the bus.
 #[tauri::command]
 fn systemd_property(hosts: State<Hosts>, target: String, prop: String)
@@ -194,7 +268,11 @@ fn kill_process(
 struct DirListing {
     path: String,
     entries: Vec<Entry>,
-    disk: String,
+    /// Typed numbers from statvfs, not a parsed `df -h` string. The UI decides
+    /// how to render them, which is where that decision belongs.
+    disk: sshdesk_core::DiskInfo,
+    /// Whether this server can copy files without shipping bytes over the wire.
+    server_side_copy: bool,
     elapsed_ms: f64,
 }
 
@@ -204,8 +282,9 @@ fn list_directory(hosts: State<Hosts>, target: String, path: String) -> Result<D
     with_host(&hosts, &target, |h| {
         let abs = resolve_path(h, &path)?;
         let entries = list_dir(h, &abs)?;
-        let disk = dir_summary(h, &abs).unwrap_or_default();
-        Ok(DirListing { path: abs, entries, disk, elapsed_ms: 0.0 })
+        let disk = sshdesk_core::disk_info(h, &abs).unwrap_or_default();
+        let server_side_copy = h.sftp()?.has("copy-data");
+        Ok(DirListing { path: abs, entries, disk, server_side_copy, elapsed_ms: 0.0 })
     })
     .map(|mut d| { d.elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0; d })
 }
@@ -459,9 +538,11 @@ fn main() {
         .manage(Hosts::default())
         .manage(term::Terminals::default())
         .manage(Forwards::default())
+        .manage(Watchers::default())
         .invoke_handler(tauri::generate_handler![
             connect, clock, disconnect, snapshot, service_action, kill_process,
             systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
+            watch_units,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,
