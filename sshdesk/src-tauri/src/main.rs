@@ -433,6 +433,43 @@ fn download_file(
     })
 }
 
+// ---- dependencies -------------------------------------------------------
+
+/// What an app needs on the remote, and whether it is there.
+#[tauri::command]
+fn deps_probe(
+    hosts: State<Hosts>,
+    target: String,
+    requirements: Vec<sshdesk_core::deps::Requirement>,
+) -> Result<Vec<sshdesk_core::deps::Status>, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::deps::probe(h, &requirements))
+}
+
+/// Install one requirement. Archives land in ~/.sshdesk/opt and need no
+/// password; packages go through PackageKit and do.
+#[tauri::command]
+fn deps_install(
+    hosts: State<Hosts>,
+    target: String,
+    requirement: sshdesk_core::deps::Requirement,
+    password: Option<String>,
+) -> Result<String, String> {
+    let pw = password.unwrap_or_default();
+    with_host(&hosts, &target, |h| sshdesk_core::deps::install(h, &requirement, &pw))
+}
+
+#[tauri::command]
+fn deps_remove(hosts: State<Hosts>, target: String, name: String) -> Result<String, String> {
+    with_host(&hosts, &target, |h| sshdesk_core::deps::remove_archive(h, &name))
+}
+
+/// Everything sshdesk has installed on this host, for Settings to list.
+#[tauri::command]
+fn deps_installed(hosts: State<Hosts>, target: String)
+    -> Result<Vec<sshdesk_core::deps::Installed>, String> {
+    with_host(&hosts, &target, sshdesk_core::deps::list_installed)
+}
+
 // ---- packages -----------------------------------------------------------
 
 #[tauri::command]
@@ -758,6 +795,7 @@ fn main() {
             config_load, config_set, config_path, icon_packs, read_binary,
             pkg_backend, pkg_search, pkg_installed, pkg_updates, pkg_details,
             pkg_install, pkg_remove, pkg_refresh,
+            deps_probe, deps_install, deps_remove, deps_installed,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,

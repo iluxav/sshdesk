@@ -6,6 +6,7 @@ import { Settings } from '../apps/Settings'
 import { ImageViewer } from '../apps/ImageViewer'
 import { Packages } from '../apps/Packages'
 import { mimeMatches, mimeOf } from '../fw/mime'
+import type { Requirement } from '../fw'
 
 /** An app is just a React component plus how to launch it. */
 export interface AppDef {
@@ -28,6 +29,8 @@ export interface AppDef {
    * handles a type starts receiving it without anything else changing.
    */
   opens?: string[]
+  /** What this app needs on the remote. Checked at launch. */
+  requires?: Requirement[]
 }
 
 export const APPS: AppDef[] = [

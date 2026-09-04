@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 pub mod config;
 pub mod icons;
+pub mod deps;
 pub mod packagekit;
 pub mod dbus;
 pub mod sftp;
@@ -78,7 +79,9 @@ impl Host {
         ensure_master(target, &ctl, password)?;
 
         let mut shell = Command::new("ssh")
-            .args(["-S", &ctl, target, "bash", "--noprofile", "--norc"])
+            // LC_ALL is set here rather than exported inside the shell, because
+            // `run` now isolates commands and an export would not survive.
+            .args(["-S", &ctl, target, "LC_ALL=C bash --noprofile --norc"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -92,16 +95,28 @@ impl Host {
             target: target.into(), ctl, shell, stdin, stdout, seq: 0,
             uid: 0, sftp: None, bus: None, bus_sock: String::new(), passwd: None,
         };
-        // Quiet the shell and make parsing predictable.
-        h.run("export LC_ALL=C; unset PROMPT_COMMAND; set +o history")?;
+        // Quiet the shell. These have to persist, so they bypass the subshell.
+        h.run_raw("unset PROMPT_COMMAND; set +o history")?;
         // One call, cached for the connection's life.
         h.uid = h.run("id -u")?.stdout.trim().parse().unwrap_or(0);
         Ok(h)
     }
 
-    /// Run one command. stdout and stderr are captured separately by routing
-    /// stderr to a temp file the same round trip reads back.
+    /// Run one command in a subshell.
+    ///
+    /// The subshell is not decoration. Everything here shares one long-lived
+    /// bash, so `set -e` in a command would stay set and the next command that
+    /// returned non-zero would kill the connection — which is exactly what a
+    /// dependency install did, because `command -v` on a missing binary exits
+    /// 1. `cd`, `umask`, shell functions and exported variables leak the same
+    /// way. Wrapping costs nothing and makes commands hermetic.
     pub fn run(&mut self, cmd: &str) -> Result<Output> {
+        self.run_raw(&format!("(\n{cmd}\n)"))
+    }
+
+    /// Run without that isolation. Only for shell setup, which has to persist
+    /// by definition.
+    fn run_raw(&mut self, cmd: &str) -> Result<Output> {
         self.seq += 1;
         let m_out = format!("__SD_OUT_{}__", self.seq);
         let m_err = format!("__SD_ERR_{}__", self.seq);

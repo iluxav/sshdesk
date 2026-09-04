@@ -2,6 +2,7 @@ import * as React from 'react'
 import htm from 'htm'
 import { fw } from '../fw'
 import { declareTokens, type TokenMap } from '../fw/tokens'
+import type { Requirement } from '../fw'
 import { makeSdk, type Sdk } from './sdk'
 import { useFw, useHost } from '../wm/host'
 import { APPS, type AppDef } from '../desktop/registry'
@@ -16,6 +17,8 @@ interface PluginModule {
     tokens?: TokenMap
     /** Content types this plugin opens, e.g. ['application/pdf', 'text/csv']. */
     opens?: string[]
+    /** What this plugin needs on the remote; checked when a window opens. */
+    requires?: Requirement[]
   }
   createAdapter?: (sdk: Sdk) => Record<string, unknown>
   createApp?: (ctx: {
@@ -132,6 +135,7 @@ export async function loadPlugins(): Promise<string[]> {
         w: m.window?.w ?? 860,
         h: m.window?.h ?? 540,
         opens: m.opens,
+        requires: m.requires,
       }
       const at = APPS.findIndex(a => a.id === def.id)
       if (at >= 0) APPS[at] = def

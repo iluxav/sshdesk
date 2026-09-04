@@ -33,6 +33,25 @@ export const manifest = {
   icon: '🔌',                     // fallback glyph, before icon packs load
   window: { w: 940, h: 520 },     // optional initial size
 
+  // What this plugin needs on the remote. Checked when a window opens; the
+  // user is shown what would happen and asked before anything is installed.
+  requires: [
+    // probe only — a missing command is reported, never installed
+    { kind: 'command', command: 'git', hint: 'install git to use this' },
+
+    // a real package. Names differ per distro, and they have to be declared:
+    // PackageKit's apt backend cannot map a *missing* file to a package.
+    { kind: 'package', command: 'docker',
+      packages: { apt: 'docker.io', dnf: 'docker', default: 'docker' } },
+
+    // not in any repo. Lands in ~/.sshdesk/opt, so it needs no root at all
+    // and `rm -rf` undoes it. The checksum is required, not optional.
+    { kind: 'archive', command: 'openvscode-server',
+      url: 'https://example.com/openvscode-server-${arch}.tar.gz',
+      sha256: { aarch64: '…64 hex…', x86_64: '…64 hex…' },
+      into: 'openvscode-server', bin: 'bin/openvscode-server' },
+  ],
+
   // Tokens you own. Settings renders an editor for these with no code written
   // for your plugin, and users change them in one place for every app.
   tokens: {

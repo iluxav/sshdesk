@@ -46,6 +46,8 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
   const [note, setNote] = useState('')
   const [, bump] = useState(0)
   const [picking, setPicking] = useState<string | null>(null)
+  const [deps, setDeps] = useState<{ name: string; size: number }[] | null>(null)
+  const host = fw.host.current()
 
   useEffect(() => { setTitle?.('Settings') }, [setTitle])
 
@@ -97,6 +99,20 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
             <span className="ml-auto text-[10px] opacity-50">{Object.keys(decls).length}</span>
           </button>
         ))}
+
+        <div className="mt-2 pt-2 border-t border-desk-line">
+          <button
+            onClick={() => {
+              setSection('__deps')
+              setDeps(null)
+              fw.deps.installed().then(setDeps).catch(e => { setErr(String(e)); setDeps([]) })
+            }}
+            className={`flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs
+              ${section === '__deps' ? 'bg-desk-accent/15 text-desk-fg' : 'text-desk-dim hover:bg-white/5'}`}>
+            <Icon id="desk:download" size={14} />
+            <span className="truncate">Installed</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-col flex-1 min-w-0">
@@ -110,7 +126,45 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
           </button>
         </div>
 
-        {/* tokens */}
+        {/* what sshdesk put on the connected host */}
+        {section === '__deps' ? (
+          <div className="flex-1 overflow-auto p-3">
+            <p className="text-[11px] text-desk-dim mb-3">
+              Software sshdesk installed under <code>~/.sshdesk/opt</code> on{' '}
+              {host ? host.replace(/^.*@/, '') : 'this host'}. Packages installed
+              through the Packages app are not listed here — those belong to the
+              machine, and removing them is its owner's business.
+            </p>
+            {deps === null && <p className="text-xs text-desk-dim">reading…</p>}
+            {deps?.length === 0 && (
+              <p className="text-xs text-desk-dim">nothing installed on this host</p>
+            )}
+            {deps?.map(d => (
+              <div key={d.name}
+                className="flex items-center gap-3 py-2 border-b border-desk-line/50">
+                <Icon id="desk:app" size={14} className="text-desk-dim" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-mono truncate">{d.name}</div>
+                  <div className="text-[10px] text-desk-dim">{fw.fmt.size(d.size)}</div>
+                </div>
+                <button
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true); setErr(''); setNote('')
+                    try {
+                      setNote(await fw.deps.remove(d.name))
+                      setDeps(await fw.deps.installed())
+                    } catch (e) { setErr(String(e)) } finally { setBusy(false) }
+                  }}
+                  className="px-2 py-0.5 rounded text-[11px] border border-desk-line
+                             text-desk-dim hover:text-desk-bad hover:border-desk-bad
+                             disabled:opacity-40">
+                  remove
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
         <div className="flex-1 overflow-auto">
           {Object.entries(tokens).map(([name, decl]) => {
             const id = `${section}.${name}`
@@ -185,10 +239,13 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
               onClose={() => setPicking(null)} />
           )}
         </div>
+        )}
 
         <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-desk-dim
                         border-t border-desk-line shrink-0">
-          <span>{Object.keys(tokens).length} tokens</span>
+          <span>{section === '__deps'
+            ? `${deps?.length ?? 0} installed`
+            : `${Object.keys(tokens).length} tokens`}</span>
           {busy && <span>· saving…</span>}
           {note && <span className="text-desk-ok">· {note}</span>}
           {err && <span className="text-desk-bad truncate">· {err}</span>}

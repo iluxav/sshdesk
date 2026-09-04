@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWM, nextId } from '../wm/store'
 import { Window } from '../wm/Window'
 import { HostScope } from '../wm/host'
+import { Requires } from '../wm/Requires'
 import { declareCoreTokens } from './tokens'
 import { onTokensChanged, setConfig } from '../fw/tokens'
 import { loadIconPacks } from '../fw/icons'
@@ -178,12 +179,14 @@ export function Desktop() {
                 return (
                   <Window key={w.id} win={w}>
                     <HostScope host={w.host}>
-                      <C
-                        winId={w.id}
-                        host={w.host}
-                        setTitle={(title: string) => dispatch({ t: 'title', id: w.id, title })}
-                        {...(w.props ?? {})}
-                      />
+                      <Requires requires={app.requires} name={app.title}>
+                        <C
+                          winId={w.id}
+                          host={w.host}
+                          setTitle={(title: string) => dispatch({ t: 'title', id: w.id, title })}
+                          {...(w.props ?? {})}
+                        />
+                      </Requires>
                     </HostScope>
                   </Window>
                 )

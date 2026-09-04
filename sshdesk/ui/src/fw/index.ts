@@ -6,6 +6,18 @@ export interface PkgItem {
   repo: string; summary: string; installed: boolean
 }
 export type PkgList = PkgItem[]
+
+/** A remote dependency an app declares in its manifest. */
+export type Requirement =
+  | { kind: 'command'; command: string; hint?: string }
+  | { kind: 'package'; command: string; packages: Record<string, string> }
+  | { kind: 'archive'; command: string; url: string; sha256: Record<string, string>
+      into: string; bin: string; strip_components?: number }
+
+export interface DepStatus {
+  command: string; present: boolean; path: string
+  kind: string; detail: string; installable: boolean
+}
 export interface PkgDetails {
   id: string; description: string; license: string; url: string; size: number; group: number
 }
@@ -346,6 +358,18 @@ function makeApi(getHost: () => string) {
     remove:    (name: string, password: string) =>
       invoke<string>('pkg_remove', { ...t(), name, password }),
     refresh:   (password: string) => invoke<string>('pkg_refresh', { ...t(), password }),
+  },
+
+  /**
+   * What an app needs on the remote. Declared in its manifest, resolved here.
+   */
+  deps: {
+    probe: (requirements: Requirement[]) =>
+      invoke<DepStatus[]>('deps_probe', { ...t(), requirements }),
+    install: (requirement: Requirement, password?: string) =>
+      invoke<string>('deps_install', { ...t(), requirement, password }),
+    remove: (name: string) => invoke<string>('deps_remove', { ...t(), name }),
+    installed: () => invoke<{ name: string; size: number }[]>('deps_installed', t()),
   },
 
   path: {
