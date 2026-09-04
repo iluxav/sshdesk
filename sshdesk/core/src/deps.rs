@@ -115,6 +115,17 @@ pub fn arch(h: &mut Host) -> Result<String> {
     Ok(h.run("uname -m")?.stdout.trim().to_string())
 }
 
+/// Substitute `${arch}` for what the publisher calls this architecture.
+///
+/// Both the probe and the install must resolve it the same way. They did not:
+/// the probe validated the raw URL, and `sane_url` rejects `$` to keep shell
+/// metacharacters out — so the placeholder failed its own validator and the
+/// Install button was disabled for a download that would have worked.
+fn resolved_url(url: &str, arch: &str, arch_map: &BTreeMap<String, String>) -> String {
+    let name = arch_map.get(arch).map(String::as_str).unwrap_or(arch);
+    url.replace("${arch}", name)
+}
+
 /// Where an archive requirement's executable would live.
 pub fn archive_bin(home: &str, into: &str, bin: &str) -> String {
     format!("{home}/{OPT_DIR}/{into}/{bin}")
@@ -171,16 +182,23 @@ pub fn probe(h: &mut Host, reqs: &[Requirement]) -> Result<Vec<Status>> {
                              false),
                 }
             }
-            Requirement::Archive { url, sha256, into, .. } => {
-                let ok = sha256.contains_key(&arch) && sane_url(url) && sane_dirname(into);
-                if ok {
+            Requirement::Archive { url, sha256, into, arch_map, .. } => {
+                let resolved = resolved_url(url, &arch, arch_map);
+                // Say which check failed. "unusable download" told nobody
+                // anything, least of all the person who wrote the manifest.
+                if !sha256.contains_key(&arch) {
+                    ("archive", format!("no build published for {arch}"), false)
+                } else if !sane_url(&resolved) {
+                    ("archive", format!("declared download is not a plain https url: {resolved}"),
+                     false)
+                } else if !sane_dirname(into) {
+                    ("archive", format!("declared install directory is unusable: {into}"), false)
+                } else if sha256.get(&arch).map(|s| !sane_sha(s)).unwrap_or(true) {
+                    ("archive", format!("declared checksum for {arch} is not a sha256"), false)
+                } else {
                     ("archive",
                      format!("download into ~/{OPT_DIR}/{into} — no root needed"),
                      true)
-                } else if !sha256.contains_key(&arch) {
-                    ("archive", format!("no build published for {arch}"), false)
-                } else {
-                    ("archive", "the app declared an unusable download".into(), false)
                 }
             }
         };
@@ -228,8 +246,7 @@ fn install_archive(
 ) -> Result<String> {
     if !sane_dirname(into) { return Err(Error::Io(format!("unsafe install directory: {into}"))) }
     let arch = arch(h)?;
-    let url_arch = arch_map.get(&arch).cloned().unwrap_or_else(|| arch.clone());
-    let url = url.replace("${arch}", &url_arch);
+    let url = resolved_url(url, &arch, arch_map);
     if !sane_url(&url) { return Err(Error::Io(format!("refusing to fetch: {url}"))) }
     let want = sha256.get(&arch)
         .ok_or_else(|| Error::Io(format!("no checksum published for {arch}")))?;
@@ -355,5 +372,41 @@ mod tests {
         }
         assert!(sane_command("openvscode-server"));
         assert!(sane_command("g++"));
+    }
+}
+
+#[cfg(test)]
+mod placeholder_tests {
+    use super::*;
+
+    /// The bug this covers: `${arch}` contains `$`, and `sane_url` rejects `$`
+    /// so that a URL can never carry shell metacharacters. Validating before
+    /// substitution therefore rejected the project's own documented syntax.
+    #[test]
+    fn the_arch_placeholder_survives_url_validation() {
+        let map: BTreeMap<String, String> =
+            [("aarch64".to_string(), "arm64".to_string())].into_iter().collect();
+        let url = "https://example.com/thing-v1-linux-${arch}.tar.gz";
+
+        assert!(!sane_url(url), "raw url should still be rejected");
+        let resolved = resolved_url(url, "aarch64", &map);
+        assert_eq!(resolved, "https://example.com/thing-v1-linux-arm64.tar.gz");
+        assert!(sane_url(&resolved), "resolved url must pass");
+    }
+
+    #[test]
+    fn an_unmapped_arch_uses_its_own_name() {
+        let empty = BTreeMap::new();
+        assert_eq!(resolved_url("https://x/y-${arch}.tgz", "riscv64", &empty),
+                   "https://x/y-riscv64.tgz");
+    }
+
+    #[test]
+    fn substitution_cannot_smuggle_metacharacters_in() {
+        // A hostile arch_map value must not turn a clean URL into a dirty one.
+        let map: BTreeMap<String, String> =
+            [("aarch64".to_string(), "arm64`id`".to_string())].into_iter().collect();
+        let resolved = resolved_url("https://x/y-${arch}.tgz", "aarch64", &map);
+        assert!(!sane_url(&resolved), "validation must run after substitution");
     }
 }
