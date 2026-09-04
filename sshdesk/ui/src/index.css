@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+/* Plugins live outside this source tree, so Tailwind would never see the
+   classes they use and would silently omit them. This covers plugins shipped
+   with the repo. Third-party plugins installed at runtime cannot be scanned at
+   build time at all — those ship their own style.css instead (see ext/loader). */
+@source "../../plugins";
+
+/* Theme tokens. Apps style themselves with plain Tailwind classes;
+   these variables are what a custom theme overrides. */
+@theme {
+  --color-desk-bg:      #0f1116;
+  --color-desk-panel:   #1a1d24;
+  --color-desk-line:    #2b2f38;
+  --color-desk-fg:      #e6e8ec;
+  --color-desk-dim:     #8b93a1;
+  --color-desk-accent:  #60a5fa;
+  --color-desk-ok:      #4ade80;
+  --color-desk-bad:     #f87171;
+}
+
+html, body, #root { height: 100%; margin: 0; overflow: hidden; }
+body {
+  background: var(--color-desk-bg);
+  color: var(--color-desk-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+/* while dragging/resizing a window, don't let the cursor select text */
+body.desk-dragging { cursor: grabbing; }
+body.desk-resizing * { cursor: inherit !important; }

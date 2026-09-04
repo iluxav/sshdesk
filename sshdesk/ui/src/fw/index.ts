@@ -1,0 +1,204 @@
+import type { DirListing, FileRead, SavedConn, ServerTime, Snapshot } from './types'
+export * from './types'
+
+const invoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
+  (window as any).__TAURI__.core.invoke(cmd, args)
+
+/** Current host every fs/sys call is issued against. */
+let host = ''
+
+export interface Clipboard { op: 'copy' | 'cut'; paths: string[]; host: string }
+let clipboard: Clipboard | null = null
+
+const listeners: Record<string, Set<(payload: any) => void>> = {}
+let opener: ((appId: string, props?: Record<string, unknown>) => void) | null = null
+
+interface Dialogs {
+  confirm(o: any): Promise<boolean>
+  prompt(o: any): Promise<string | null>
+  alert(o: any): Promise<void>
+}
+let dialogs: Dialogs | null = null
+export const setHost = (h: string) => { host = h }
+export const getHost = () => host
+
+
+/**
+ * The framework surface available to every app.
+ *
+ * Access control is deliberately NOT enforced here. The remote machine decides
+ * what the user may do; a denied operation comes back as a thrown error whose
+ * message is the actual stderr from Linux. Apps show that message.
+ *
+ * What *is* enforced below the line: every path is shell-quoted in the Rust
+ * core, so a hostile filename can never become a hostile command.
+ */
+function makeApi(getHost: () => string) {
+  const t = () => ({ target: getHost() })
+  return {
+  host: {
+    connect: (target: string, password?: string) =>
+      invoke<string>('connect', { target, password }).then(r => { setHost(target); return r }),
+    disconnect: () => invoke<void>('disconnect', t()),
+    current: () => getHost(),
+  },
+
+  fs: {
+    list:     (path: string) => invoke<DirListing>('list_directory', { ...t(), path }),
+    read:     (path: string) => invoke<FileRead>('read_text', { ...t(), path }),
+    write:    (path: string, content: string) => invoke<void>('write_text', { ...t(), path, content }),
+    mkdir:    (path: string) => invoke<void>('make_dir', { ...t(), path }),
+    rename:   (from: string, to: string) => invoke<void>('rename_path', { ...t(), from, to }),
+    copy:     (from: string, to: string) => invoke<void>('copy_path', { ...t(), from, to }),
+    remove:   (path: string, recursive = false) => invoke<void>('remove_path', { ...t(), path, recursive }),
+    download: (path: string, name: string) => invoke<string>('download_file', { ...t(), path, name }),
+    upload:   (local: string, remote: string) => invoke<string>('upload_file', { ...t(), local, remote }),
+  },
+
+  /**
+   * Local port forwards over the live connection. Adding one costs no
+   * reconnect — `ssh -O forward` on the existing ControlMaster.
+   */
+  net: {
+    forward:   (remotePort: number, localPort?: number) =>
+      invoke<number>('forward_port', { target: getHost(), remotePort, localPort }),
+    unforward: (remotePort: number) =>
+      invoke<void>('cancel_forward', { target: getHost(), remotePort }),
+    forwards:  () => invoke<Record<number, number>>('list_forwards', { target: getHost() }),
+    openUrl:   (url: string) => invoke<void>('open_url', { url }),
+  },
+
+  /** Interactive PTY sessions. Streaming, unlike everything else here. */
+  term: {
+    open:   (id: string, target: string, cols: number, rows: number) =>
+      invoke<void>('term_open', { id, target, cols, rows }),
+    write:  (id: string, data: string) => invoke<void>('term_write', { id, data }),
+    resize: (id: string, cols: number, rows: number) =>
+      invoke<void>('term_resize', { id, cols, rows }),
+    close:  (id: string) => invoke<void>('term_close', { id }),
+  },
+
+  sys: {
+    snapshot:      () => invoke<Snapshot>('snapshot', t()),
+    serviceAction: (unit: string, action: string, password: string) =>
+      invoke<string>('service_action', { ...t(), unit, action, password }),
+    kill: (pid: number, password = '') => invoke<string>('kill_process', { ...t(), pid, password }),
+    clock: () => invoke<ServerTime>('clock', t()),
+  },
+
+  /**
+   * System clipboard for file operations. Lives in the framework rather than in
+   * one app so a future app can cut in Files and paste elsewhere. Holds paths
+   * only — nothing is read or copied until paste.
+   */
+  clip: {
+    set(op: 'copy' | 'cut', paths: string[], fromHost = getHost()) {
+      clipboard = paths.length ? { op, paths, host: fromHost } : null
+    },
+    get: () => clipboard,
+    clear() { clipboard = null },
+    isEmpty: () => clipboard === null,
+  },
+
+  /**
+   * Remembered connections. Stores host and user only — never the password.
+   * Re-connecting always asks again, which is the point.
+   */
+  conns: {
+    list(): SavedConn[] {
+      return (fw.prefs.get<SavedConn[]>('connections', []))
+        .slice().sort((a, b) => b.lastUsed - a.lastUsed)
+    },
+    remember(user: string, host: string) {
+      const all = fw.prefs.get<SavedConn[]>('connections', [])
+        .filter(c => !(c.user === user && c.host === host))
+      all.push({ user, host, lastUsed: Date.now() })
+      fw.prefs.set('connections', all)
+    },
+    forget(user: string, host: string) {
+      fw.prefs.set('connections', fw.prefs.get<SavedConn[]>('connections', [])
+        .filter(c => !(c.user === user && c.host === host)))
+    },
+  },
+
+  /** Small persisted key/value store for app preferences (localStorage). */
+  prefs: {
+    get<T>(key: string, fallback: T): T {
+      try { const v = localStorage.getItem('sshdesk:' + key); return v ? JSON.parse(v) as T : fallback }
+      catch { return fallback }
+    },
+    set(key: string, value: unknown) {
+      try { localStorage.setItem('sshdesk:' + key, JSON.stringify(value)) } catch { /* quota */ }
+    },
+  },
+
+  /**
+   * Framework event bus. Windows are independent component instances, so a
+   * mutation in one has to tell the others to re-read. Emitting 'fs:changed'
+   * with the affected directories keeps multiple explorers coherent.
+   */
+  bus: {
+    on(topic: string, fn: (payload: any) => void) {
+      (listeners[topic] ??= new Set()).add(fn)
+      return () => { listeners[topic]?.delete(fn) }   // must return void for useEffect
+    },
+    emit(topic: string, payload?: any) {
+      listeners[topic]?.forEach(fn => { try { fn(payload) } catch { /* isolate */ } })
+    },
+  },
+
+  /**
+   * Window management for apps. The desktop installs the real implementation
+   * at mount; fw stays framework-agnostic and holds only the hook.
+   */
+  ui: {
+    open(appId: string, props?: Record<string, unknown>) { opener?.(appId, props) },
+    _install(fn: (appId: string, props?: Record<string, unknown>) => void) { opener = fn },
+
+    /**
+     * Dialogs for plugins. window.confirm/prompt are no-ops in WKWebView —
+     * they return without ever showing anything — so plugins must use these.
+     */
+    confirm: (o: { title: string; message?: string; okLabel?: string; danger?: boolean }) =>
+      dialogs ? dialogs.confirm(o) : Promise.resolve(false),
+    prompt: (o: { title: string; label?: string; value?: string; placeholder?: string; okLabel?: string }) =>
+      dialogs ? dialogs.prompt(o) : Promise.resolve(null),
+    alert: (o: { title: string; message?: string }) =>
+      dialogs ? dialogs.alert(o) : Promise.resolve(),
+    _installDialogs(d: Dialogs) { dialogs = d },
+  },
+
+  path: {
+    join: (dir: string, name: string) => (dir === '/' ? '' : dir) + '/' + name,
+    parent: (p: string) => p.replace(/\/[^/]+$/, '') || '/',
+    base: (p: string) => p.split('/').filter(Boolean).pop() ?? '/',
+  },
+
+  fmt: {
+    size: (b: number) =>
+      b < 1024 ? `${b} B`
+      : b < 1048576 ? `${(b / 1024).toFixed(1)} K`
+      : b < 1073741824 ? `${(b / 1048576).toFixed(1)} M`
+      : `${(b / 1073741824).toFixed(1)} G`,
+    time: (s: number) =>
+      s ? new Date(s * 1000).toLocaleString(undefined,
+        { year: '2-digit', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '',
+    },
+  }
+}
+
+/**
+ * The ambient API, bound to the *active* host. Fine for one-shot actions
+ * triggered by the focused window.
+ */
+export const fw = Object.assign(makeApi(() => host), {
+  /**
+   * A copy of the API pinned to one host. Windows use this so a background
+   * poll keeps talking to its own machine even when you focus another.
+   */
+  for: (target: string) => makeApi(() => target),
+})
+
+// Apps can reach it globally, as specified.
+;(window as any).fw = fw
+export type Fw = ReturnType<typeof makeApi>

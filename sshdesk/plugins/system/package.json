@@ -1,0 +1,10 @@
+{
+  "name": "sshdesk-plugin-system",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.jsx --bundle --format=esm --jsx=transform --outfile=index.js --log-level=warning"
+  },
+  "devDependencies": { "esbuild": "^0.25.0" }
+}

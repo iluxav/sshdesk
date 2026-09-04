@@ -1,0 +1,57 @@
+/* Ports plugin styles — plain CSS against the desktop tokens, so this works
+   whether or not Tailwind ever scanned the plugin. */
+
+.ports-root { display:flex; flex-direction:column; height:100%;
+              background: var(--color-desk-panel); color: var(--color-desk-fg); font-size:12px; }
+
+.ports-bar { display:flex; align-items:center; gap:8px; padding:6px 8px; flex:0 0 auto;
+             border-bottom:1px solid var(--color-desk-line); }
+.ports-spacer { margin-left:auto; }
+
+.ports-input { width:260px; padding:4px 8px; font-size:12px;
+               background: rgb(0 0 0 / .4); color: var(--color-desk-fg);
+               border:1px solid var(--color-desk-line); border-radius:6px; outline:none;
+               user-select:text; }
+.ports-input:focus { border-color: var(--color-desk-accent); }
+
+.ports-check { display:flex; align-items:center; gap:4px; font-size:11px;
+               color: var(--color-desk-dim); }
+
+.ports-btn { padding:3px 8px; font-size:11px; border-radius:5px;
+             border:1px solid var(--color-desk-line); color: var(--color-desk-fg);
+             background: transparent; white-space:nowrap; }
+.ports-btn:hover:not(:disabled) { background: rgb(255 255 255 / .1); }
+.ports-btn:disabled { opacity:.3; }
+.ports-btn.accent { border-color: var(--color-desk-accent); color: var(--color-desk-accent); }
+.ports-btn.danger { border-color: rgb(248 113 113 / .4); color: var(--color-desk-bad); }
+.ports-btn.danger:hover:not(:disabled) { background: rgb(248 113 113 / .15); }
+
+.ports-err  { padding:6px 12px; font-size:11px; flex:0 0 auto; user-select:text;
+              color: var(--color-desk-bad); background: rgb(248 113 113 / .15);
+              border-bottom:1px solid rgb(248 113 113 / .3); overflow-wrap:anywhere; }
+.ports-note { font-size:11px; color: var(--color-desk-ok); }
+
+.ports-scroll { flex:1 1 auto; min-height:0; overflow:auto; }
+.ports-table  { width:100%; border-collapse:collapse; }
+.ports-table th { position:sticky; top:0; z-index:1; text-align:left; font-weight:500;
+                  font-size:10px; letter-spacing:.04em; text-transform:uppercase;
+                  padding:5px 8px; color: var(--color-desk-dim);
+                  background: var(--color-desk-panel);
+                  border-bottom:1px solid var(--color-desk-line); }
+.ports-table td { padding:4px 8px; border-top:1px solid rgb(255 255 255 / .04); }
+.ports-table tbody tr:hover { background: rgb(255 255 255 / .04); }
+
+.ports-actions { display:flex; gap:4px; justify-content:flex-end; }
+
+.ports-badge { font-size:10px; padding:1px 6px; border-radius:4px;
+               background: rgb(255 255 255 / .07); color: var(--color-desk-dim); }
+.ports-badge.mine { background: rgb(96 165 250 / .18); color:#93c5fd; }
+
+.ports-tag { margin-left:6px; font-size:9px; padding:0 4px; border-radius:3px;
+             background: rgb(255 255 255 / .06); color: var(--color-desk-dim); }
+
+.ports-status { flex:0 0 auto; padding:5px 10px; font-size:11px;
+                color: var(--color-desk-dim); border-top:1px solid var(--color-desk-line); }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dim  { color: var(--color-desk-dim); }
