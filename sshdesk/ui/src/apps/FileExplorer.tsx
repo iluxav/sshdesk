@@ -20,6 +20,10 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
   const [busy, setBusy] = useState(false)
   /** True while an OS drag from Finder is hovering *this* explorer. */
   const [osDrop, setOsDrop] = useState(false)
+  /** This explorer's outermost element, used to claim OS drops by hit test. */
+  const root = useRef<HTMLDivElement>(null)
+  /** Last drop diagnostics, surfaced in the status bar when a drop misses. */
+  const [dropDebug, setDropDebug] = useState('')
 
   // Pinned to this window's machine, not whichever host is focused.
   const fw = useFw()
@@ -77,13 +81,25 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
     let un: (() => void) | null = null
     let cancelled = false
 
-    // Tauri reports physical pixels; the DOM wants CSS pixels.
+    // Coordinate space is not something to assume here. Tauri types this as a
+    // PhysicalPosition, but macOS works in points natively, so whether a scale
+    // factor has already been applied differs by platform and version. Getting
+    // it wrong lands the hit test somewhere near the top-left corner and the
+    // drop is silently ignored — so try both and take whichever hits.
+    const hit = (x: number, y: number) => {
+      const el = document.elementFromPoint(x, y)
+      if (!el) return null
+      const zone = el.closest('[data-drop-id]') as HTMLElement | null
+      if (zone && zone.dataset.dropId === dropId) return zone.dataset.dropArg || cwdRef.current
+      // Dropped on this window but not on a drop zone (toolbar, status bar):
+      // still ours, and the current directory is the obvious destination.
+      if (root.current?.contains(el)) return cwdRef.current
+      return null
+    }
+
     const targetAt = (pos: { x: number; y: number }) => {
-      const el = document.elementFromPoint(
-        pos.x / window.devicePixelRatio, pos.y / window.devicePixelRatio)
-      const zone = el?.closest('[data-drop-id]') as HTMLElement | null
-      if (!zone || zone.dataset.dropId !== dropId) return null
-      return zone.dataset.dropArg || cwdRef.current
+      const dpr = window.devicePixelRatio || 1
+      return hit(pos.x / dpr, pos.y / dpr) ?? hit(pos.x, pos.y)
     }
 
     import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => {
@@ -99,7 +115,16 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
 
         setOsDrop(false)
         const dest = targetAt(p.position)
-        if (!dest || !p.paths?.length) return   // not ours
+        if (!dest) {
+          // Only the explorer under the cursor should act, so a miss is normal
+          // when several are open. Record it anyway: "every window ignored it"
+          // is the signature of a coordinate-space bug, and silence hides that.
+          const dpr = window.devicePixelRatio || 1
+          setDropDebug(`drop at ${Math.round(p.position.x)},${Math.round(p.position.y)} `
+            + `(dpr ${dpr}) did not land on this window`)
+          return
+        }
+        if (!p.paths?.length) return
 
         setBusy(true); setErr(''); setNote('')
         try {
@@ -313,6 +338,7 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
 
   return (
     <div
+      ref={root}
       className="relative flex h-full bg-desk-panel text-desk-fg outline-none"
       tabIndex={0}
       onKeyDown={ev => {
@@ -485,6 +511,7 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
         )}
         {d && <span>· {d.elapsed_ms.toFixed(0)} ms</span>}
         {note && <span className="text-desk-ok">· {note}</span>}
+        {dropDebug && <span className="text-desk-dim" title={dropDebug}>· drop missed</span>}
         {sel.size > 0 && !note && (
           <span title="Hold Option while dragging to copy the files to Finder">
             · ⌥drag → Finder

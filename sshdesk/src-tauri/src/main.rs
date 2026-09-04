@@ -603,6 +603,22 @@ fn open_url(url: String) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
+        // Log OS drag-drop at the Rust boundary. If files land here but nothing
+        // happens in the UI, the problem is the frontend hit test; if nothing
+        // reaches here at all, it is the window config or the OS. Without this
+        // the two are indistinguishable.
+        .on_window_event(|_w, event| {
+            if let tauri::WindowEvent::DragDrop(e) = event {
+                match e {
+                    tauri::DragDropEvent::Enter { paths, position } =>
+                        eprintln!("drag enter: {} path(s) at {:?}", paths.len(), position),
+                    tauri::DragDropEvent::Drop { paths, position } =>
+                        eprintln!("drag drop: {paths:?} at {position:?}"),
+                    tauri::DragDropEvent::Leave => eprintln!("drag leave"),
+                    _ => {}
+                }
+            }
+        })
         .setup(|_app| {
             // Devtools in debug builds only: `make dev` opens them automatically.
             #[cfg(debug_assertions)]
