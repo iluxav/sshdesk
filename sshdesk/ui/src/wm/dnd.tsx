@@ -11,7 +11,22 @@ import {
  * we do the same here: full control, a real drag ghost, and it works across
  * "windows" because they are all one document.
  */
-export interface DragPayload { paths: string[]; host: string; label: string }
+export interface DragPayload {
+  paths: string[]
+  host: string
+  label: string
+  /**
+   * The drag has passed the threshold and is really happening. Somewhere to
+   * start work that a plain click must not trigger.
+   */
+  onArmed?: () => void
+  /**
+   * The pointer has left the app window while still held down — the cue to
+   * hand the gesture to the OS. The internal drag is abandoned when this
+   * fires, so the drop will not also be treated as a move between folders.
+   */
+  onLeaveWindow?: () => void
+}
 
 type DropHandler = (p: DragPayload, mods: { meta: boolean; alt: boolean; arg: string }) => void
 
@@ -32,6 +47,7 @@ export function DragProvider({ children }: { children: ReactNode }) {
   const live = useRef<DragState | null>(null)
 
   const start = useCallback((e: React.PointerEvent, payload: DragPayload) => {
+    let escaped = false
     if (e.button !== 0) return
     const ox = e.clientX, oy = e.clientY
     let armed = false
@@ -41,6 +57,18 @@ export function DragProvider({ children }: { children: ReactNode }) {
         if (Math.hypot(ev.clientX - ox, ev.clientY - oy) < THRESHOLD) return
         armed = true
         document.body.style.cursor = 'grabbing'
+        payload.onArmed?.()
+      }
+      // Dragging past the window edge means the destination is another app.
+      // The mouse button is still down here, which is the only moment macOS
+      // will accept a native drag — so this is where the handoff has to happen.
+      if (!escaped && payload.onLeaveWindow && (
+        ev.clientX <= 0 || ev.clientY <= 0 ||
+        ev.clientX >= window.innerWidth - 1 || ev.clientY >= window.innerHeight - 1)) {
+        escaped = true
+        stop()
+        payload.onLeaveWindow()
+        return
       }
       // A drop target names its handler with data-drop-id and its destination
       // with data-drop-arg, so one handler per window serves every row.
@@ -51,13 +79,17 @@ export function DragProvider({ children }: { children: ReactNode }) {
       setDrag(live.current)
     }
 
-    const up = (ev: PointerEvent) => {
+    const stop = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       document.body.style.cursor = ''
-      const s = live.current
       live.current = null
       setDrag(null)
+    }
+
+    const up = (ev: PointerEvent) => {
+      const s = live.current
+      stop()
       if (armed && s?.over) {
         handlers.get(s.over.id)?.(payload, { meta: ev.metaKey, alt: ev.altKey, arg: s.over.arg })
       }

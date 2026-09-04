@@ -389,7 +389,9 @@ fn download_file(
         .collect();
     let dest = format!("{base}/{safe}");
     with_host(&hosts, &target, |h| {
-        let n = h.download(&path, &dest)?;
+        // download_tree, not download: a folder is a legitimate thing to want,
+        // and SFTP has no bulk primitive so somebody has to do the walk.
+        let n = h.sftp()?.download_tree(&path, std::path::Path::new(&dest))?;
         Ok(format!("saved {safe} ({n} bytes) to ~/Downloads"))
     })
 }
