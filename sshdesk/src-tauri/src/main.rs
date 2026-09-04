@@ -187,6 +187,84 @@ fn systemd_property(hosts: State<Hosts>, target: String, prop: String)
     with_host(&hosts, &target, |h| sshdesk_core::systemd_property(h, &prop))
 }
 
+/// Materialise remote files locally so the OS can drag them.
+///
+/// A native drag needs real paths: macOS hands Finder a file, not a promise we
+/// could fill in later, so the bytes have to exist before the gesture starts.
+/// That is the tradeoff of this approach — instant for a config file, and a
+/// visible wait for something large.
+///
+/// Each drag gets its own staging directory, so two drags of the same filename
+/// cannot collide, and previous stagings are swept on the way in.
+#[tauri::command]
+fn stage_for_drag(
+    hosts: State<Hosts>,
+    target: String,
+    paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let root = std::env::temp_dir().join("sshdesk-drag");
+    sweep_old_stagings(&root);
+    let dir = root.join(format!("{}-{}", std::process::id(), now_millis()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    with_host(&hosts, &target, |h| {
+        let mut out = Vec::new();
+        for p in &paths {
+            let name = p.rsplit('/').next().unwrap_or("file");
+            // A remote name is never trusted as a local path component.
+            let safe: String = name.chars()
+                .map(|c| if c == '/' || c == '\\' || c == ':' { '_' } else { c })
+                .collect();
+            let local = dir.join(if safe.is_empty() { "file" } else { &safe });
+            h.sftp()?.download_tree(p, &local)?;
+            out.push(local.to_string_lossy().to_string());
+        }
+        Ok(out)
+    })
+}
+
+/// Drop staging directories older than an hour. They are copies; the originals
+/// are still on the remote, so this is safe to be aggressive about.
+fn sweep_old_stagings(root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    for e in entries.flatten() {
+        if e.metadata().and_then(|m| m.modified()).map(|t| t < cutoff).unwrap_or(false) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Upload files dropped from Finder into a remote directory.
+#[tauri::command]
+fn upload_files(
+    hosts: State<Hosts>,
+    target: String,
+    locals: Vec<String>,
+    remote_dir: String,
+) -> Result<String, String> {
+    with_host(&hosts, &target, |h| {
+        let mut bytes = 0u64;
+        let mut n = 0;
+        for l in &locals {
+            let path = std::path::Path::new(l);
+            let name = path.file_name().map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file".into());
+            let dest = sshdesk_core::sftp::join(&remote_dir, &name);
+            bytes += h.sftp()?.upload_tree(path, &dest)?;
+            n += 1;
+        }
+        Ok(format!("uploaded {n} item{} ({bytes} bytes)", if n == 1 { "" } else { "s" }))
+    })
+}
+
 /// Arbitrary D-Bus call — the platform primitive plugins build on.
 ///
 /// `signature` describes the argument types exactly as `busctl call` requires;
@@ -524,6 +602,7 @@ fn open_url(url: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_drag::init())
         .setup(|_app| {
             // Devtools in debug builds only: `make dev` opens them automatically.
             #[cfg(debug_assertions)]
@@ -542,7 +621,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             connect, clock, disconnect, snapshot, service_action, kill_process,
             systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
-            watch_units,
+            watch_units, stage_for_drag, upload_files,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,

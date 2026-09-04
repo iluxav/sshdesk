@@ -16,7 +16,7 @@
         "title": "sshdesk",
         "width": 1280,
         "height": 820,
-        "dragDropEnabled": false,
+        "dragDropEnabled": true,
         "x": 80,
         "y": 80,
         "center": false,

@@ -7,6 +7,12 @@ const invoke = <T,>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
 /** Current host every fs/sys call is issued against. */
 let host = ''
 
+/**
+ * Ghost shown under the cursor while dragging to Finder. The drag plugin
+ * requires an image; a data URL keeps it out of the asset pipeline.
+ */
+const DRAG_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA7UlEQVR42u3bSwrCMBSF4btOVxKKc7cRyD5cQAfdgxsIpdC5qVRw4Mh6H9H/wBk3+VpuqlARQsiRnNJ18KzXpkvrGqzFavNTwM0/O/3jnbd7EjrY/KMAKE77tZMOAADw5dS6pF4AtrUCoATQxXuAGkDrHP1NcFujKsCOUILe+dkE4LXevwbfrckUIGgBAAAAAAAAAAAjgHS+3DwKAADMAAAAAAAATgEAAGAGAAAAAAD83ikAAADMAAAAAAAA/g/44FQAAABmAACigdAFgNr3AgDUJXcAkEUz7QJj4M2PYpGgT0IWj+yng1uFEHIkd8bhfiQ/lnwwAAAAAElFTkSuQmCC'
+
 /** Typed filesystem totals from `statvfs@openssh.com`. */
 export interface DiskInfo { total: number; free: number; avail: number }
 
@@ -80,6 +86,32 @@ function makeApi(getHost: () => string) {
     disk:     (path: string) => invoke<DiskInfo>('disk_info', { ...t(), path }),
     /** Which SFTP extensions this server offers — feature-detect, don't assume. */
     caps:     () => invoke<string[]>('sftp_extensions', t()),
+
+    /**
+     * Hand remote files to the OS as a native drag, so they can be dropped in
+     * Finder or any other app.
+     *
+     * macOS wants real paths, not a promise it can redeem later, so the files
+     * are downloaded to a staging directory first and the drag begins once
+     * they land. Small files feel instant; a large one is a visible wait, and
+     * that is inherent to this approach rather than a bug.
+     */
+    dragOut: async (paths: string[]) => {
+      const staged = await invoke<string[]>('stage_for_drag', { ...t(), paths })
+      const { Channel } = await import('@tauri-apps/api/core')
+      const onEvent = new Channel<{ result: string }>()
+      await invoke('plugin:drag|start_drag', {
+        item: staged,
+        image: DRAG_ICON,
+        options: { mode: 'copy' },
+        onEvent,
+      })
+      return staged
+    },
+
+    /** Upload files dropped from Finder into a remote directory. */
+    uploadFiles: (locals: string[], remoteDir: string) =>
+      invoke<string>('upload_files', { ...t(), locals, remoteDir }),
   },
 
   /**

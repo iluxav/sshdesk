@@ -549,6 +549,44 @@ impl Sftp {
         Ok(n)
     }
 
+    /// Recursively copy a remote tree to the local machine.
+    ///
+    /// SFTP has no bulk primitive, so this walks. Directories are created
+    /// locally as they are encountered; symlinks are followed as files, which
+    /// is what a drag to Finder should produce.
+    pub fn download_tree(&mut self, remote: &str, local: &std::path::Path) -> Result<u64> {
+        let a = self.stat(remote)?;
+        if a.kind() != "dir" {
+            if let Some(parent) = local.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| Error::Io(e.to_string()))?;
+            }
+            return self.download(remote, &local.to_string_lossy());
+        }
+        std::fs::create_dir_all(local).map_err(|e| Error::Io(e.to_string()))?;
+        let mut total = 0;
+        for e in self.list(remote)? {
+            total += self.download_tree(&join(remote, &e.name), &local.join(&e.name))?;
+        }
+        Ok(total)
+    }
+
+    /// Recursively copy a local tree up to the remote.
+    pub fn upload_tree(&mut self, local: &std::path::Path, remote: &str) -> Result<u64> {
+        let meta = std::fs::metadata(local).map_err(|e| Error::Io(e.to_string()))?;
+        if !meta.is_dir() {
+            return self.upload(&local.to_string_lossy(), remote);
+        }
+        // Already-exists is fine; anything else is a real failure.
+        let _ = self.mkdir(remote);
+        let mut total = 0;
+        for entry in std::fs::read_dir(local).map_err(|e| Error::Io(e.to_string()))? {
+            let entry = entry.map_err(|e| Error::Io(e.to_string()))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            total += self.upload_tree(&entry.path(), &join(remote, &name))?;
+        }
+        Ok(total)
+    }
+
     pub fn lstat(&mut self, path: &str) -> Result<Attrs> {
         let (t, p) = self.call(LSTAT, |b| { b.str(path); })?;
         if t != ATTRS { return Self::check_status(t, &p).and(Err(Error::Io("sftp: no attrs".into()))) }

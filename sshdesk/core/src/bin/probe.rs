@@ -44,6 +44,9 @@ fn main() {
     section("SFTP — the file lane");
     let tmp = probe_sftp(&mut h);
 
+    section("tree transfer — what drag and drop rides on");
+    probe_trees(&mut h);
+
     section("D-Bus — the system lane");
     probe_dbus(&mut h);
 
@@ -194,6 +197,52 @@ fn probe_sftp(h: &mut Host) -> Option<String> {
         Err(e) => bad!("remove: {e}"),
     }
     Some(dir)
+}
+
+/// Recursive transfer both ways. Dragging a folder to Finder and dropping one
+/// back are just these two walks, so they are asserted by content, not exit code.
+fn probe_trees(h: &mut Host) {
+    let home = match h.sftp().and_then(|s| s.home()) {
+        Ok(v) => v, Err(e) => { bad!("home: {e}"); return }
+    };
+    let remote = format!("{home}/.sshdesk-tree");
+    let _ = remove(h, &remote, true);
+
+    if let Err(e) = mkdir(h, &remote) { bad!("mkdir: {e}"); return }
+    let _ = mkdir(h, &format!("{remote}/sub"));
+    let _ = write_file(h, &format!("{remote}/top.txt"), "top\n");
+    let _ = write_file(h, &format!("{remote}/sub/deep.txt"), "deep \u{2014} \u{fc}n\u{ef}c\u{f6}d\u{e9}\n");
+
+    let local = std::env::temp_dir().join("sshdesk-probe-tree");
+    let _ = std::fs::remove_dir_all(&local);
+
+    match h.sftp().and_then(|s| s.download_tree(&remote, &local)) {
+        Ok(n) => ok!("download_tree pulled {n} bytes"),
+        Err(e) => { bad!("download_tree: {e}"); return }
+    }
+    let want = "deep \u{2014} \u{fc}n\u{ef}c\u{f6}d\u{e9}\n";
+    match std::fs::read_to_string(local.join("sub/deep.txt")) {
+        Ok(s) if s == want => ok!("nested file arrived byte-identical, non-ASCII intact"),
+        Ok(s) => bad!("nested content wrong: {s:?}"),
+        Err(e) => bad!("nested file missing: {e}"),
+    }
+
+    let back = format!("{home}/.sshdesk-tree-back");
+    let _ = remove(h, &back, true);
+    match h.sftp().and_then(|s| s.upload_tree(&local, &back)) {
+        Ok(n) => ok!("upload_tree pushed {n} bytes"),
+        Err(e) => { bad!("upload_tree: {e}"); return }
+    }
+    match read_file(h, &format!("{back}/sub/deep.txt"), 1 << 20) {
+        Ok(r) if r.text == want => ok!("round trip remote -> local -> remote verified by content"),
+        Ok(r) => bad!("round trip mismatch: {:?}", r.text),
+        Err(e) => bad!("round trip read: {e}"),
+    }
+
+    let _ = remove(h, &remote, true);
+    let _ = remove(h, &back, true);
+    let _ = std::fs::remove_dir_all(&local);
+    ok!("cleaned up both sides");
 }
 
 fn probe_dbus(h: &mut Host) {

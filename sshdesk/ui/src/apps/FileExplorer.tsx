@@ -18,6 +18,8 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
   const [err, setErr] = useState('')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  /** True while an OS drag from Finder is hovering *this* explorer. */
+  const [osDrop, setOsDrop] = useState(false)
 
   // Pinned to this window's machine, not whichever host is focused.
   const fw = useFw()
@@ -61,6 +63,55 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
 
   // One handler per window; the destination arrives as `arg` from the element.
   useDropTarget(dropId, (payload, { meta, arg }) => transfer(payload.paths, arg, meta))
+
+  /**
+   * Files dropped from Finder.
+   *
+   * Every explorer is in the same document, so all of them see the event.
+   * Whichever one is actually under the cursor claims it, decided by hit
+   * testing rather than by focus — the same way the internal drop targets
+   * already work. If the cursor is over a directory row, that row wins;
+   * otherwise the drop lands in the current directory.
+   */
+  useEffect(() => {
+    let un: (() => void) | null = null
+    let cancelled = false
+
+    // Tauri reports physical pixels; the DOM wants CSS pixels.
+    const targetAt = (pos: { x: number; y: number }) => {
+      const el = document.elementFromPoint(
+        pos.x / window.devicePixelRatio, pos.y / window.devicePixelRatio)
+      const zone = el?.closest('[data-drop-id]') as HTMLElement | null
+      if (!zone || zone.dataset.dropId !== dropId) return null
+      return zone.dataset.dropArg || cwdRef.current
+    }
+
+    import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => {
+      if (cancelled) return
+      getCurrentWebview().onDragDropEvent(async ev => {
+        const p = ev.payload as any
+        if (p.type === 'over' || p.type === 'enter') {
+          setOsDrop(!!targetAt(p.position))
+          return
+        }
+        if (p.type === 'leave') { setOsDrop(false); return }
+        if (p.type !== 'drop') return
+
+        setOsDrop(false)
+        const dest = targetAt(p.position)
+        if (!dest || !p.paths?.length) return   // not ours
+
+        setBusy(true); setErr(''); setNote('')
+        try {
+          setNote(await fw.fs.uploadFiles(p.paths, dest))
+          await load(cwdRef.current)
+          fw.bus.emit('fs:changed', { dirs: [dest] })
+        } catch (e) { setErr(String(e)) } finally { setBusy(false) }
+      }).then(f => { if (cancelled) f(); else un = f })
+    })
+
+    return () => { cancelled = true; un?.() }
+  }, [dropId, fw, load])
 
   // Another window changed something in the directory we are showing.
   useEffect(() => fw.bus.on('fs:changed', (p: { dirs?: string[]; from?: number }) => {
@@ -342,7 +393,11 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
       </div>
 
       {/* list — click the empty area below to clear the selection */}
-      <div ref={scroller} {...dropProps(dropId, cwd)} className="flex-1 overflow-auto min-h-0"
+      <div ref={scroller} {...dropProps(dropId, cwd)}
+        data-os-drop={osDrop ? '1' : undefined}
+        className={'flex-1 overflow-auto min-h-0' + (osDrop
+          ? ' outline outline-2 -outline-offset-2 outline-desk-accent bg-desk-accent/5'
+          : '')}
            onClick={ev => { if (ev.target === ev.currentTarget) setSel(new Set()) }}
            onContextMenu={ev => {
              if (ev.target === ev.currentTarget) { setSel(new Set()); menu.open(ev, itemsForBackground()) }
@@ -359,6 +414,19 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
                 onPointerDown={ev => {
                   const list = sel.has(e.name) ? selected : [e]
                   if (!sel.has(e.name)) { setSel(new Set([e.name])); anchor.current = e.name }
+                  // Alt-drag hands the files to the OS instead of moving them
+                  // inside the desktop. The two gestures cannot be the same:
+                  // a native drag takes over the pointer, so the choice has to
+                  // be made before the drag starts rather than when it ends.
+                  if (ev.altKey) {
+                    ev.preventDefault()
+                    const paths = list.map(x => fw.path.join(cwd, x.name))
+                    setNote(`preparing ${paths.length === 1 ? list[0].name : paths.length + ' items'}\u2026`)
+                    fw.fs.dragOut(paths)
+                      .then(() => setNote('dragged to Finder'))
+                      .catch(er => setErr(String(er)))
+                    return
+                  }
                   startDrag(ev, {
                     host: fw.host.current(),
                     paths: list.map(x => fw.path.join(cwd, x.name)),
@@ -417,6 +485,11 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
         )}
         {d && <span>· {d.elapsed_ms.toFixed(0)} ms</span>}
         {note && <span className="text-desk-ok">· {note}</span>}
+        {sel.size > 0 && !note && (
+          <span title="Hold Option while dragging to copy the files to Finder">
+            · ⌥drag → Finder
+          </span>
+        )}
 
       </div>
 
