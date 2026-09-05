@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFw } from '../wm/host'
 import { APPS } from '../desktop/registry'
 import { Icon } from '../wm/Icon'
-import { declarations, resolve, configKey, setConfig, setValue, config, machineConfig,
+import { declarations, resolve, configKey, setConfig, setValue, machineConfig,
          type TokenDecl, type Layer } from '../fw/tokens'
 import { searchIcons, iconCount } from '../fw/icons'
 import { applyTheme } from '../fw/theme'
@@ -47,8 +47,7 @@ function joinColor(rgb: string, alpha: number): string {
 
 const LAYER_LABEL: Record<Layer, string> = {
   default: 'default',
-  set: 'everywhere',
-  machine: 'this machine',
+  machine: 'set',
 }
 
 const APP_TITLES: Record<string, string> = {
@@ -73,8 +72,6 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
   const [note, setNote] = useState('')
   const [, bump] = useState(0)
   const [picking, setPicking] = useState<string | null>(null)
-  /** Whether edits apply everywhere or only to the connected machine. */
-  const [scope, setScope] = useState<'all' | 'machine'>('all')
   const host = fw.host.current()
   const shortHost = host.replace(/^.*@/, '')
   const [deps, setDeps] = useState<{ name: string; size: number }[] | null>(null)
@@ -117,20 +114,18 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
 
   const write = useCallback(async (id: string, decl: TokenDecl, value?: string) => {
     const key = configKey(id, decl.type)
-    // A token that can only be global is always written globally, whatever the
-    // toggle says — writing it per machine would succeed and do nothing.
-    const target = scope === 'machine' && !decl.global ? host : undefined
+    if (!host) { setErr('connect to a machine first'); return }
     setBusy(true); setErr(''); setNote('')
     try {
-      await fw.config.set(key, value, target)
+      await fw.config.set(key, value, host)
       // Apply what we know before confirming, so the UI never reports success
       // while still showing the old value.
-      setValue(key, value, target)
-      applyTheme(host ? [host] : [])
+      setValue(key, value, host)
+      applyTheme([host], host)
       await reload()
-      setNote(value === undefined ? 'reset' : target ? `saved for ${shortHost}` : 'saved')
+      setNote(value === undefined ? 'reset to default' : `saved for ${shortHost}`)
     } catch (e) { setErr(String(e)) } finally { setBusy(false) }
-  }, [fw, reload, scope, host, shortHost])
+  }, [fw, reload, host, shortHost])
 
   const openRaw = async () => {
     try { fw.ui.open('editor', { path: await fw.config.path(), host: '' }) }
@@ -170,21 +165,21 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
 
       <div className="flex flex-col flex-1 min-w-0">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-desk-line shrink-0">
-          <div className="flex rounded-md overflow-hidden border border-desk-line text-[11px]">
-            {(['all', 'machine'] as const).map(sc => (
-              <button key={sc} disabled={sc === 'machine' && !host}
-                onClick={() => setScope(sc)}
-                className={`px-2.5 py-1 disabled:opacity-30 ${scope === sc
-                  ? 'bg-desk-accent/20 text-desk-fg' : 'text-desk-dim hover:bg-white/5'}`}>
-                {sc === 'all' ? 'Everywhere' : shortHost || 'This machine'}
-              </button>
-            ))}
-          </div>
-          <span className="text-[11px] text-desk-dim">
-            {scope === 'all'
-              ? 'saved on this Mac, used by every machine'
-              : `saved on this Mac, used only by ${shortHost}`}
-          </span>
+          {host ? (
+            <>
+              <span className="w-1.5 h-1.5 rounded-full bg-desk-ok shrink-0" />
+              <span className="text-[11px]">
+                Settings for <span className="text-desk-fg">{shortHost}</span>
+              </span>
+              <span className="text-[11px] text-desk-dim">
+                · saved on this Mac, used by this machine only
+              </span>
+            </>
+          ) : (
+            <span className="text-[11px] text-desk-dim">
+              Connect to a machine to configure it.
+            </span>
+          )}
           <button onClick={openRaw}
             className="ml-auto text-[11px] text-desk-dim hover:text-desk-fg">
             edit file…
@@ -235,8 +230,7 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
             const id = `${section}.${name}`
             const r = resolve(id, host)
             const key = configKey(id, decl.type)
-            const editingMachine = scope === 'machine' && !decl.global
-            const isSet = (editingMachine ? machineConfig(host) : config())[key] !== undefined
+            const isSet = machineConfig(host)[key] !== undefined
             return (
               <div key={id}
                 className="flex items-center gap-3 px-3 py-2 border-b border-desk-line/50">
@@ -339,12 +333,10 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
 
                 {/* provenance — the thing that stops "why is nothing changing" */}
                 <span className="text-[10px] text-desk-dim shrink-0 w-24 text-right"
-                      title={decl.global
-                        ? 'The menu bar and dock are shared, so this is always global'
-                        : `winning layer: ${LAYER_LABEL[r.layer]}`}>
-                  {scope === 'machine' && decl.global
-                    ? 'always global'
-                    : r.via ? `↳ ${r.via}` : LAYER_LABEL[r.layer]}
+                      title={r.layer === 'machine'
+                        ? `set for ${shortHost}`
+                        : 'the value this app ships with'}>
+                  {r.via ? `↳ ${r.via}` : LAYER_LABEL[r.layer]}
                 </span>
 
                 <button

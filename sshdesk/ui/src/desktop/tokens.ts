@@ -26,10 +26,10 @@ export function declareCoreTokens() {
 
     // Surfaces, so the chrome can be retinted without disturbing the palette.
     // The alpha is deliberate — these sit over the wallpaper.
-    // Chrome: one bar and one dock for the whole desktop, so these cannot
-    // differ per machine.
-    menubar:   { type: 'color', default: '#ffffff12', label: 'Menu bar', global: true },
-    dock:      { type: 'color', default: '#ffffff12', label: 'Dock', global: true },
+    // Chrome. One bar and one dock for the whole desktop, so they take their
+    // colours from whichever machine has focus.
+    menubar:   { type: 'color', default: '#ffffff12', label: 'Menu bar' },
+    dock:      { type: 'color', default: '#ffffff12', label: 'Dock' },
     titlebar:  { type: 'color', default: '#ffffff0a', label: 'Window title bar' },
     border:    { type: 'color', default: '#2b2f38',   label: 'Window border' },
     selection: { type: 'color', default: '#60a5fa4d', label: 'Selection' },

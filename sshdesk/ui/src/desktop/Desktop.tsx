@@ -52,22 +52,32 @@ export function Desktop() {
     let live = true
     ;(async () => {
       await loadIconPacks().catch(() => [])
+      // Config used to have a shared section. Move whatever is left of it onto
+      // the machines that were using it, once, rather than resetting colours
+      // that somebody chose.
+      await fw.config.migrate(fw.conns.list().map(c => `${c.user}@${c.host}`))
+        .then(n => { if (n) console.info(`config: moved ${n} shared value(s) onto each machine`) })
+        .catch(() => { /* nothing to move */ })
       const cfg = await fw.config.load().catch(() => null)
       if (!live) return
       if (cfg) {
         setConfig(cfg.values, cfg.machines)
         for (const w of cfg.warnings) console.warn('config:', w)
       }
-      applyTheme(hostsRef.current)
+      applyTheme(hostsRef.current, activeRef.current ?? '')
       bumpTheme(n => n + 1)
     })()
     return () => { live = false }
   }, [])
 
   useEffect(() => onTokensChanged(() => {
-    applyTheme(hostsRef.current)
+    applyTheme(hostsRef.current, activeRef.current ?? '')
     bumpTheme(n => n + 1)
   }), [])
+
+  // The chrome takes its colours from the focused machine, so switching panes
+  // has to repaint it.
+  useEffect(() => { applyTheme(hosts, active ?? '') }, [active, hosts, themeRev])
 
   // One per machine, since a machine can override the picture. Re-read
   // whenever the theme changes; a path that no longer resolves leaves the

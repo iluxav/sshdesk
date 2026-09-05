@@ -26,15 +26,21 @@ use std::collections::BTreeMap;
 
 pub type Flat = BTreeMap<String, String>;
 
-/// Per-machine overrides live under their own top-level table:
+/// Configuration is per machine. Every value — colours, icons, the desktop
+/// picture — belongs to one target:
 ///
 /// ```toml
-/// [theme]
-/// "desk.accent" = "#60a5fa"          # everywhere
+/// [machine."iluxa@10.168.168.226".theme.desk]
+/// accent = "#60a5fa"
 ///
-/// [machine."iluxa@10.168.168.153".theme]
-/// "desk.accent" = "#f87171"          # that box only
+/// [machine."iluxa@10.168.168.153".theme.desk]
+/// accent = "#f87171"
 /// ```
+///
+/// There is no shared layer. It existed for one revision and the result was
+/// that every edit silently applied to both machines, which is the opposite of
+/// what a desktop per machine is for. Anything not set falls back to the app's
+/// declared default, which is the only other layer there is.
 ///
 /// They are kept apart rather than flattened into one map, because a target is
 /// full of dots — `machine.iluxa@10.168.168.153.theme.desk.accent` has no
@@ -273,21 +279,40 @@ pub fn load() -> Settings {
     Settings { values, machines, warnings }
 }
 
-/// Write one key, either globally or for one machine.
+/// Write one key for one machine.
 pub fn set(key: &str, value: Option<&str>, machine: Option<&str>) -> Result<()> {
+    let target = machine.ok_or_else(||
+        Error::Io("configuration belongs to a machine; connect to one first".into()))?;
     if let Some(v) = value { validate(key, v).map_err(Error::Io)?; }
     let mut warnings = Vec::new();
-    let (mut global, mut machines) = read_all(&mut warnings);
-    match machine {
-        None => { match value { Some(v) => global.insert(key.into(), v.into()),
-                                None => global.remove(key) }; }
-        Some(t) => {
-            let e = machines.entry(t.to_string()).or_default();
-            match value { Some(v) => e.insert(key.into(), v.into()), None => e.remove(key) };
-            if e.is_empty() { machines.remove(t); }
+    let (global, mut machines) = read_all(&mut warnings);
+    let e = machines.entry(target.to_string()).or_default();
+    match value { Some(v) => e.insert(key.into(), v.into()), None => e.remove(key) };
+    if e.is_empty() { machines.remove(target); }
+    write_all(&global, &machines)
+}
+
+/// Move anything left over from the shared layer into the machines that were
+/// using it, once.
+///
+/// Config used to have a global section. Dropping it silently would have reset
+/// everyone's colours, so on first sight the old values become each known
+/// machine's starting point and the shared section is written away. Machines
+/// that already set a key keep their own.
+pub fn migrate_globals(targets: &[String]) -> Result<usize> {
+    let mut warnings = Vec::new();
+    let (global, mut machines) = read_all(&mut warnings);
+    if global.is_empty() { return Ok(0) }
+
+    let moved = global.len();
+    for t in targets {
+        let e = machines.entry(t.clone()).or_default();
+        for (k, v) in &global {
+            e.entry(k.clone()).or_insert_with(|| v.clone());
         }
     }
-    write_all(&global, &machines)
+    write_all(&Flat::new(), &machines)?;
+    Ok(moved)
 }
 
 #[cfg(test)]
@@ -385,6 +410,34 @@ mod machine_tests {
         assert_eq!(g.get("theme.desk.accent").map(String::as_str), Some("#111111"));
         assert_eq!(g.keys().filter(|k| k.contains("machine")).count(), 0, "{g:?}");
         assert_eq!(m["a@b.c"].get("theme.desk.accent").map(String::as_str), Some("#222222"));
+    }
+
+    /// A shared section used to exist. Dropping it without moving the values
+    /// would silently reset colours somebody chose, so the migration copies
+    /// them onto each machine — and must be safe to run on every launch.
+    #[test]
+    fn migration_copies_shared_values_and_then_does_nothing() {
+        let text = "[theme.desk]\naccent = \"#f00\"\nbg = \"#111\"\n\
+                    \n[machine.\"a@1\".theme.desk]\naccent = \"#0f0\"\n";
+        let (global, mut machines) = parse_all(text).unwrap();
+        assert_eq!(global.len(), 2);
+
+        // What migrate_globals does, without touching the real file.
+        let targets = ["a@1".to_string(), "b@2".to_string()];
+        for t in &targets {
+            let e = machines.entry(t.clone()).or_default();
+            for (k, v) in &global { e.entry(k.clone()).or_insert_with(|| v.clone()); }
+        }
+        let after = render_all(&Flat::new(), &machines);
+        let (g2, m2) = parse_all(&after).unwrap();
+
+        assert!(g2.is_empty(), "shared section survived: {after}");
+        // A machine that had its own value keeps it.
+        assert_eq!(m2["a@1"].get("theme.desk.accent").map(String::as_str), Some("#0f0"));
+        assert_eq!(m2["a@1"].get("theme.desk.bg").map(String::as_str), Some("#111"));
+        // One that had none inherits both.
+        assert_eq!(m2["b@2"].get("theme.desk.accent").map(String::as_str), Some("#f00"));
+        assert_eq!(m2["b@2"].len(), 2);
     }
 
     #[test]

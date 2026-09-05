@@ -232,6 +232,8 @@ function makeApi(getHost: () => string) {
       invoke<void>('config_set', { key, value, machine }),
     /** Where the file lives, so it can be opened in the Editor. */
     path: () => invoke<string>('config_path'),
+    /** Move a pre-existing shared configuration onto each machine. Once. */
+    migrate: (targets: string[]) => invoke<number>('config_migrate', { targets }),
   },
 
   sys: {

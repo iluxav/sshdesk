@@ -32,12 +32,20 @@ function themeTokens(): Array<[string, string, TokenType]> {
   return out
 }
 
-export function buildCss(hosts: string[] = []): string {
+/**
+ * `active` is the focused machine, and its values land on :root.
+ *
+ * The menu bar and the dock sit outside every pane, so they have to take their
+ * colours from somewhere. Following focus makes them agree with whichever
+ * machine you are actually looking at, which is also a strong hint about which
+ * one that is.
+ */
+export function buildCss(hosts: string[] = [], active = ''): string {
   const root: string[] = []
   const perApp = new Map<string, string[]>()
 
   for (const [appId, name] of themeTokens()) {
-    const v = resolve(`${appId}.${name}`).value
+    const v = resolve(`${appId}.${name}`, active).value
     if (!v) continue
     const decl = `${cssVar(appId, name)}: ${v};`
     if (appId === 'desk') root.push(decl)
@@ -72,12 +80,12 @@ function cssEscape(s: string): string {
   return s.replace(/["\\]/g, '\\$&')
 }
 
-export function applyTheme(hosts: string[] = []) {
+export function applyTheme(hosts: string[] = [], active = '') {
   let el = document.getElementById(STYLE_ID)
   if (!el) {
     el = document.createElement('style')
     el.id = STYLE_ID
     document.head.appendChild(el)
   }
-  el.textContent = buildCss(hosts)
+  el.textContent = buildCss(hosts, active)
 }

@@ -314,13 +314,20 @@ fn config_load() -> sshdesk_core::config::Settings {
 ///
 /// Validation lives here rather than in the UI so a hand-edited file and the
 /// Settings app get identical treatment.
-/// `machine` scopes the write to one target; without it the value applies
-/// everywhere. Both live in the same file on this Mac.
+/// Write one key for one machine. Configuration is per machine; there is no
+/// shared layer to write to.
 #[tauri::command]
 fn config_set(key: String, value: Option<String>, machine: Option<String>)
     -> Result<(), String> {
     sshdesk_core::config::set(&key, value.as_deref(), machine.as_deref())
         .map_err(|e| e.to_string())
+}
+
+/// Move a pre-existing shared configuration onto the machines that were using
+/// it. Returns how many keys moved; zero when there is nothing to do.
+#[tauri::command]
+fn config_migrate(targets: Vec<String>) -> Result<usize, String> {
+    sshdesk_core::config::migrate_globals(&targets).map_err(|e| e.to_string())
 }
 
 /// Where the file lives, so the UI can offer to open it in the Editor.
@@ -902,7 +909,7 @@ fn main() {
             connect, clock, disconnect, snapshot, service_action, kill_process,
             systemd_property, disk_info, sftp_extensions, dbus_call, dbus_get,
             watch_units, stage_for_drag, upload_files,
-            config_load, config_set, config_path, icon_packs, read_binary, wallpaper_data,
+            config_load, config_set, config_path, config_migrate, icon_packs, read_binary, wallpaper_data,
             pkg_backend, pkg_search, pkg_installed, pkg_updates, pkg_details,
             pkg_install, pkg_remove, pkg_refresh,
             deps_probe, deps_install, deps_remove, deps_installed,

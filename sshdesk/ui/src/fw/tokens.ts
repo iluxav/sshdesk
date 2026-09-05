@@ -2,14 +2,16 @@
  * Design tokens: icons and theme values, declared by apps and overridden by
  * config.
  *
- * One config file, on the machine you are sitting at, holding both the values
- * that apply everywhere and any a single machine overrides.
+ * One config file on this Mac, holding one section per machine. Colours, icons
+ * and the desktop picture all belong to a machine; the only other layer is the
+ * default an app declares.
  *
- * An earlier attempt put per-host config *on the host*, which failed badly: the
- * dock and menu bar resolve without a host, so a value saved there was written
- * successfully and then changed nothing anybody could see. Keeping every layer
- * local fixes that — the file is one place, visible and hand-editable, and
- * Settings states which scope each value came from.
+ * Two earlier attempts are worth remembering. Storing per-host config *on the
+ * host* failed because the chrome resolves without a host, so a value saved
+ * there changed nothing visible. A shared layer alongside per-machine
+ * overrides failed differently: edits defaulted to shared, so configuring one
+ * machine quietly reconfigured the other. Everything is per machine now, and
+ * the chrome follows whichever machine has focus.
  *
  * An app owns a namespace equal to its registered id, so there is one
  * mechanical rule and no separate name registry. A token id is
@@ -28,15 +30,6 @@ export type TokenType = 'icon' | 'color' | 'length' | 'image'
 
 export interface TokenDecl {
   type: TokenType
-  /**
-   * True when this can only be set globally.
-   *
-   * The menu bar and the dock sit outside every pane, so a per-machine value
-   * would be written successfully and change nothing — which is exactly the
-   * failure that made the first attempt at per-host config worthless. Better
-   * to say so than to let it be set.
-   */
-  global?: boolean
   /** A literal, or `@other.token` to inherit from another token. */
   default: string
   label: string
@@ -44,7 +37,7 @@ export interface TokenDecl {
 }
 
 export type TokenMap = Record<string, TokenDecl>
-export type Layer = 'default' | 'set' | 'machine'
+export type Layer = 'default' | 'machine'
 
 export interface Resolved {
   value: string
@@ -124,10 +117,9 @@ export function resolve(id: string, host?: string, seen = new Set<string>()): Re
   if (!decl) return { value: '', layer: 'default' }
 
   const key = configKey(id, decl.type)
-  // This machine, then everywhere, then the declared default.
+  // This machine, then the declared default. Those are the only two layers.
   let value: string | undefined = host ? machines[host]?.[key] : undefined
   let layer: Layer = 'machine'
-  if (value === undefined) { value = values[key]; layer = 'set' }
   if (value === undefined) { value = decl.default; layer = 'default' }
 
   if (value?.startsWith('@')) {
