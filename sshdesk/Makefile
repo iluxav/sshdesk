@@ -14,8 +14,8 @@ all: run
 ## run: rebuild (UI + Rust) and launch the app
 #
 # SSHDESK_PLUGINS points at the repo so edits here are picked up. A release
-# build reads the plugins bundled inside the .app instead; a bare `cargo tauri
-# build --no-bundle` binary has none, which is why this is needed.
+# build reads the plugins bundled inside the .app instead; a --no-bundle
+# binary has none, which is why this is needed.
 run: kill build
 	@echo "→ launching sshdesk"
 	@SSHDESK_PLUGINS=$(PWD)/plugins $(BIN) > /tmp/sshdesk.log 2>&1 &
@@ -49,12 +49,12 @@ plugins: lint-plugins
 	done
 
 ## build: full release build via the Tauri CLI
-# Must go through `cargo tauri build`, NOT plain `cargo build`. The CLI runs
+# Must go through the Tauri CLI, NOT plain `cargo build`. The CLI runs
 # beforeBuildCommand and drives asset embedding; plain cargo silently ships an
 # empty page because build.rs is not re-run when only ui/dist changes.
 build: plugins
 	@echo "→ building (tauri cli: vite + rust + embed)"
-	@cd src-tauri && cargo tauri build --no-bundle
+	@cd src-tauri && node ../ui/node_modules/@tauri-apps/cli/tauri.js build --no-bundle
 
 ## ui-build: compile the React/Vite frontend to ui/dist only
 ui-build:
@@ -67,7 +67,7 @@ ui-install:
 
 ## dev: hot reload (vite + tauri). Edit .tsx and it updates instantly. Opens devtools.
 dev: kill
-	@cd src-tauri && SSHDESK_PLUGINS=$(PWD)/../plugins cargo tauri dev
+	@cd src-tauri && SSHDESK_PLUGINS=$(PWD)/../plugins node ../ui/node_modules/@tauri-apps/cli/tauri.js dev
 
 ## probe: run the headless verification harness against $(HOST)
 probe:

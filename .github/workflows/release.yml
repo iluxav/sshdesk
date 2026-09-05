@@ -41,12 +41,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: sshdesk/src-tauri -> target
+          # core is its own package with its own target dir, so the unit-test
+          # step rebuilds it from scratch unless it is cached too.
+          workspaces: |
+            sshdesk/src-tauri -> target
+            sshdesk/core -> target
           key: ${{ matrix.target }}
-
-      # Cached with the toolchain, so this is only slow the first time.
-      - name: Install the Tauri CLI
-        run: cargo install tauri-cli --version '^2' --locked
 
       - name: Install UI dependencies
         working-directory: sshdesk/ui
@@ -64,9 +64,12 @@ jobs:
         # The live tests need a reachable host and are marked #[ignore], so
         # this runs only what can pass without one.
 
+      # The npm CLI, not `cargo install tauri-cli`. That step compiled the CLI
+      # from source on every run and took 414 of the job's 707 seconds; this
+      # one is a prebuilt binary that npm ci has already fetched.
       - name: Build
         working-directory: sshdesk/src-tauri
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: node ../ui/node_modules/@tauri-apps/cli/tauri.js build --target ${{ matrix.target }}
 
       # A --target build nests the output under the triple.
       - name: Package
