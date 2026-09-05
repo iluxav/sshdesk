@@ -38,6 +38,17 @@ fn stable_port(key: &str) -> u16 {
     20000 + (h % 10000) as u16
 }
 
+/// Does something accept a connection on this local port right now?
+///
+/// A forward can be listening and still be useless — the master it belonged to
+/// is gone, or the remote end vanished. Binding is not the question; being
+/// answered is.
+fn port_answers(port: u16) -> bool {
+    use std::net::{TcpStream, SocketAddr, Ipv4Addr, IpAddr};
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(400)).is_ok()
+}
+
 fn free_port(preferred: u16) -> u16 {
     use std::net::TcpListener;
     if preferred >= 1024 && TcpListener::bind(("127.0.0.1", preferred)).is_ok() {
@@ -800,8 +811,15 @@ fn forward_socket(
     local_port: Option<u16>,
 ) -> Result<u16, String> {
     let key = format!("{target}:sock:{remote_path}");
-    if let Some(p) = fwds.0.lock().map_err(|e| e.to_string())?.get(&key) {
-        return Ok(*p)
+
+    // A remembered port is not the same as a working one. If the master
+    // reconnected, or the forward went away with a previous session, the port
+    // is still in the map and still bound — it just answers nothing. Handing
+    // that back gives the caller a URL that loads a blank frame, which is what
+    // a dead VS Code window turned out to be.
+    if let Some(p) = fwds.0.lock().map_err(|e| e.to_string())?.get(&key).copied() {
+        if port_answers(p) { return Ok(p) }
+        fwds.0.lock().map_err(|e| e.to_string())?.remove(&key);
     }
     // Deterministic, not whatever the OS hands out.
     //
@@ -811,10 +829,24 @@ fn forward_socket(
     // good deal of its state there, which is why its settings reset on every
     // reconnect. So the port is a stable hash of the forward instead, and a
     // bookmark — or a browser's memory of the site — survives a reconnect.
-    let local = free_port(local_port.unwrap_or_else(|| stable_port(&key)));
-    if local == 0 { return Err("no free local port".into()) }
+    let want = local_port.unwrap_or_else(|| stable_port(&key));
     let map = hosts.0.lock().map_err(|e| e.to_string())?;
     let h = map.get(&target).ok_or("not connected")?;
+
+    // Retract anything already registered for this spec before adding it.
+    // `-O forward` for a forward the master already holds exits 0 and does
+    // nothing, and a leftover from a previous run keeps the stable port bound
+    // — so without this the port drifts to a random one, and the whole reason
+    // for making it stable (a web origin, and the browser storage behind it)
+    // is lost on every restart.
+    let _ = h.cancel_forward_socket(want, &remote_path);
+
+    let local = free_port(want);
+    if local == 0 { return Err("no free local port".into()) }
+    if local != want {
+        eprintln!("sshdesk: port {want} was taken, using {local} — \
+                   anything this page remembered will look like a new site");
+    }
     h.forward_socket(local, &remote_path).map_err(|e| e.to_string())?;
     fwds.0.lock().map_err(|e| e.to_string())?.insert(key, local);
     Ok(local)

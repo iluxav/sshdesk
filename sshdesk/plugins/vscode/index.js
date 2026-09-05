@@ -132,6 +132,7 @@ export function createApp({ React, html, api, fw }) {
 
   return function VSCode({ setTitle }) {
     const [url, setUrl] = useState('')
+    const [frameOk, setFrameOk] = useState(false)
     const [err, setErr] = useState('')
     const [log, setLog] = useState('')
     const [status, setStatus] = useState('starting the server…')
@@ -140,7 +141,8 @@ export function createApp({ React, html, api, fw }) {
     useEffect(() => { setTitle && setTitle('VS Code') }, [setTitle])
 
     const boot = useCallback(async () => {
-      setErr(''); setLog(''); setUrl(''); setStatus('starting the server…')
+      setErr(''); setLog(''); setUrl(''); setFrameOk(false)
+      setStatus('starting the server…')
       try {
         const path = await api.start()
         socket.current = path
@@ -161,6 +163,20 @@ export function createApp({ React, html, api, fw }) {
 
     useEffect(() => { boot() }, [boot])
 
+    // A frame that cannot reach its port renders nothing, and "nothing" looks
+    // exactly like a working dark theme. If the load has not reported success
+    // shortly after the url is set, say so and show the server log rather than
+    // leaving a black rectangle to be interpreted.
+    useEffect(() => {
+      if (!url || frameOk) return
+      const t = setTimeout(async () => {
+        if (frameOk) return
+        setErr(`nothing is answering at ${url}`)
+        try { setLog(await api.log()) } catch { /* best effort */ }
+      }, 8000)
+      return () => clearTimeout(t)
+    }, [url, frameOk])
+
     const restart = async () => {
       try { await api.stop() } catch { /* it may already be gone */ }
       if (socket.current) {
@@ -169,12 +185,13 @@ export function createApp({ React, html, api, fw }) {
       boot()
     }
 
-    if (url) {
+    if (url && !err) {
       return html`
         <iframe
           class="vsc-frame"
           src=${url}
           title="VS Code"
+          onLoad=${() => setFrameOk(true)}
           allow="clipboard-read; clipboard-write" />`
     }
 
