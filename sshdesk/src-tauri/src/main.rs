@@ -698,10 +698,17 @@ fn plugin_roots(app: &tauri::AppHandle) -> Vec<std::path::PathBuf> {
     let mut roots = Vec::new();
 
     // Tauri writes `../plugins` resources under a `_up_` segment.
-    if let Ok(res) = app.path().resource_dir() {
-        for candidate in [res.join("_up_").join("plugins"), res.join("plugins")] {
-            if candidate.is_dir() { roots.push(candidate); break }
+    match app.path().resource_dir() {
+        Ok(res) => {
+            let mut hit = false;
+            for candidate in [res.join("_up_").join("plugins"), res.join("plugins")] {
+                if candidate.is_dir() { roots.push(candidate); hit = true; break }
+            }
+            if !hit {
+                eprintln!("sshdesk: no plugins under resource dir {}", res.display());
+            }
         }
+        Err(e) => eprintln!("sshdesk: no resource dir: {e}"),
     }
 
     if let Ok(home) = std::env::var("HOME") {
