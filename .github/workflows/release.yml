@@ -1,0 +1,139 @@
+name: release
+
+# Tag-driven, plus a manual button for dry runs. The tag is the version:
+# v0.2.0 produces sshdesk-v0.2.0-aarch64.tar.gz.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (no release is published for a manual run)'
+        required: false
+
+jobs:
+  build:
+    # Two runners because there is no cross-compilation here: an Apple Silicon
+    # build needs an Apple Silicon runner, and Intel needs an Intel one.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: aarch64
+          - runner: macos-13
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sshdesk/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sshdesk/src-tauri -> target
+          key: ${{ matrix.arch }}
+
+      # Cached with the toolchain, so this is only slow the first time.
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Install UI dependencies
+        working-directory: sshdesk/ui
+        run: npm ci
+
+      # The plugin lint is cheap and catches a mistake that unmounts the app at
+      # runtime, so it runs before anything is built.
+      - name: Lint plugins
+        working-directory: sshdesk
+        run: make lint-plugins
+
+      - name: Unit tests
+        working-directory: sshdesk
+        run: cargo test --release --manifest-path core/Cargo.toml
+        # The live tests need a reachable host and are marked #[ignore], so
+        # this runs only what can pass without one.
+
+      - name: Build
+        working-directory: sshdesk/src-tauri
+        run: cargo tauri build
+
+      - name: Package
+        id: package
+        working-directory: sshdesk/src-tauri/target/release/bundle/macos
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # An `if` rather than `[ … ] && …`: that form survives `set -e` only
+          # because the failing test precedes the `&&`, which is too subtle to
+          # leave for the next person to edit around.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag || 'dev' }}"
+          fi
+          NAME="sshdesk-${TAG}-${{ matrix.arch }}.tar.gz"
+          # No parent directory in the archive: install.sh expects sshdesk.app
+          # at the top level.
+          tar -czf "$NAME" sshdesk.app
+          shasum -a 256 "$NAME" > "$NAME.sha256"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "path=$PWD/$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sshdesk-${{ matrix.arch }}
+          path: |
+            ${{ steps.package.outputs.path }}
+            ${{ steps.package.outputs.path }}.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # One SHA256SUMS covering every architecture, because install.sh fetches
+      # exactly one file to verify against.
+      - name: Collect checksums
+        working-directory: dist
+        run: |
+          cat *.sha256 > SHA256SUMS
+          rm -f *.sha256
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "sshdesk ${GITHUB_REF_NAME}" \
+            --notes "$(cat <<'NOTES'
+          ## Install
+
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
+          ```
+
+          The app is not notarised by Apple. macOS quarantines anything a
+          *browser* downloads, so a downloaded archive would be refused —
+          installed with `curl` it is not quarantined and simply opens. The
+          installer verifies the checksum before writing anything.
+
+          To remove it: `rm -rf /Applications/sshdesk.app`
+          NOTES
+          )" \
+            dist/*

@@ -1,3 +1,29 @@
+# ssh-loopback
+
+Two experiments in making an SSH connection aware of what is happening inside
+it. **sshdesk** is a desktop for machines you reach over SSH; **sshloop** is the
+one-file POC the idea started from.
+
+## Install sshdesk
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iluxav/sshdesk/main/install.sh | sh
+```
+
+macOS, Apple Silicon or Intel. The installer checks the published SHA256 before
+writing anything, and puts `sshdesk.app` in `/Applications`.
+
+`curl` rather than a download link on purpose: the app is not notarised by
+Apple, and macOS quarantines anything a *browser* fetches — a downloaded
+archive would be refused by Gatekeeper. Nothing curl fetches is quarantined, so
+installed this way it simply opens. Removing it is `rm -rf
+/Applications/sshdesk.app`; nothing else is written outside `~/.sshdesk`.
+
+Builds are produced by `.github/workflows/release.yml` on a `v*` tag, one per
+architecture, since there is no cross-compilation for this.
+
+---
+
 # sshloop
 
 Auto-forward remote listening ports over an already-open SSH connection.
