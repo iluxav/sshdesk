@@ -484,6 +484,50 @@ fn download_file(
     })
 }
 
+/// Open a URL as its own window.
+///
+/// Not an iframe, and the difference is not cosmetic. WebKit partitions storage
+/// by <top-level site, origin>, so a page embedded in tauri://localhost gets a
+/// third-party partition that is not durably kept — which is why VS Code's
+/// theme and settings reset on every restart. As a top-level window the page is
+/// first-party, and its storage persists exactly like sshdesk's own does.
+/// Cookies work first-party too, so a connection token becomes usable again.
+#[tauri::command]
+fn open_web_window(
+    app: tauri::AppHandle,
+    label: String,
+    url: String,
+    title: String,
+) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    // A label may only contain a restricted alphabet, and it comes from a
+    // target like user@10.0.0.1.
+    let label: String = label.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+
+    if let Some(w) = app.get_webview_window(&label) {
+        // Already open: bring it forward rather than stacking another.
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(())
+    }
+
+    let parsed = url.parse::<tauri::Url>().map_err(|e| format!("bad url: {e}"))?;
+    if !matches!(parsed.host_str(), Some("127.0.0.1") | Some("localhost")) {
+        return Err("refusing to open a window on anything but loopback".into())
+    }
+
+    WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed))
+        .title(title)
+        .inner_size(1280.0, 840.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ---- dependencies -------------------------------------------------------
 
 /// What an app needs on the remote, and whether it is there.
@@ -977,7 +1021,7 @@ fn main() {
             config_load, config_set, config_path, config_migrate, icon_packs, read_binary, wallpaper_data,
             pkg_backend, pkg_search, pkg_installed, pkg_updates, pkg_details,
             pkg_install, pkg_remove, pkg_refresh,
-            deps_probe, deps_install, deps_remove, deps_installed,
+            deps_probe, deps_install, deps_remove, deps_installed, open_web_window,
             list_directory, read_text, download_file,
             write_text, make_dir, rename_path, copy_path, remove_path, upload_file,
             term_open, term_write, term_resize, term_close, exec, list_plugins,

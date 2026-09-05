@@ -382,6 +382,16 @@ function makeApi(getHost: () => string) {
    * Window management for apps. The desktop installs the real implementation
    * at mount; fw stays framework-agnostic and holds only the hook.
    */
+  /**
+   * Open a loopback URL as its own window rather than an iframe.
+   *
+   * WebKit partitions storage by <top-level site, origin>, so an embedded page
+   * never gets durable storage. A top-level window is first-party and keeps
+   * what it saves.
+   */
+  openWindow: (label: string, url: string, title: string) =>
+    invoke<void>('open_web_window', { label, url, title }),
+
   /** Read a local image as a data URL, for the desktop picture. */
   wallpaper: (path: string) => invoke<string>('wallpaper_data', { path }),
 

@@ -3,20 +3,24 @@
  *
  * A test of whether the platform is real: this adds a full IDE with no change
  * to sshdesk itself. The dependency comes from the manifest, the server is
- * started with `sdk.exec`, the port is forwarded with `fw.net.forward` on the
- * live connection, and the result is an iframe. Nothing here is privileged.
+ * started with `sdk.exec`, the socket is forwarded with `fw.net.forwardSocket`
+ * on the live connection, and the result is a window.
+ *
+ * A window rather than an iframe, and not for looks. WebKit partitions storage
+ * by <top-level site, origin>, so an embedded page gets a third-party
+ * partition that is not durably kept — VS Code stores its settings in browser
+ * storage, so every restart came back to the default light theme. Top-level,
+ * it is first-party and keeps what it saves.
+ *
+ * That also brings the connection token back. It is delivered as a
+ * SameSite=Lax cookie, which an embedded frame never gets to keep; a top-level
+ * page does. So the server binds a unix socket *and* requires a token — no TCP
+ * port on the remote for anyone to reach, and the forwarded port needs a secret.
  *
  * Why a server on the remote rather than VS Code Web bundled in the app: web
  * builds only run *web* extensions. No rust-analyzer, no gopls, no debugger —
  * anything that spawns a process needs an extension host on a machine. Putting
  * that host where the code already is, is the whole point.
- *
- * Settings, extensions and workspace state live in three explicit directories
- * under ~/.sshdesk/opt, so they survive a restart and are removable with the
- * rest of it. The other half of persistence is the *port*: the workbench keeps
- * plenty in browser storage, which is keyed by origin, so a forward that
- * landed on a different port each launch reset everything. That is handled on
- * the Rust side, which now derives a stable port per forward.
  */
 
 const VERSION = '1.109.5'
@@ -51,6 +55,10 @@ const OPT = '$HOME/.sshdesk/opt'
 const LOG = `${OPT}/openvscode.log`
 const PID = `${OPT}/openvscode.pid`
 const SOCK = `${OPT}/openvscode.sock`
+// The token is generated here, not parsed back out of the log: bound to a
+// socket the server prints no URL, so there is no "tkn=" line to read. Kept
+// beside the pid so an already-running server can be adopted with its token.
+const TOKF = `${OPT}/openvscode.token`
 /** The literal path, for the forward — the shell expands $HOME, we cannot. */
 const SOCK_MARK = 'SOCKET='
 
@@ -75,11 +83,15 @@ export function createAdapter(sdk) {
       # started with, which may predate this. Re-assert them.
       chmod 700 "${SOCK}" 2>/dev/null || true
       echo "${SOCK_MARK}${SOCK}"
+      echo "TOKEN=$(cat "${TOKF}" 2>/dev/null)"
       exit 0
     fi
     rm -f "${LOG}" "${SOCK}"
+    TOK=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf '%s' "$TOK" > "${TOKF}"
+    chmod 600 "${TOKF}"
     nohup "$D/bin/openvscode-server" \
-      --socket-path "${SOCK}" --without-connection-token \
+      --socket-path "${SOCK}" --connection-token "$TOK" \
       --server-data-dir "${OPT}/openvscode-data" \
       --user-data-dir "${OPT}/openvscode-user" \
       --extensions-dir "${OPT}/openvscode-extensions" \
@@ -95,11 +107,12 @@ export function createAdapter(sdk) {
     # so it should not depend on how the process happened to be started.
     chmod 700 "${SOCK}"
     echo "${SOCK_MARK}${SOCK}"
+    echo "TOKEN=$TOK"
   `
 
   const STOP = `
     if [ -f "${PID}" ]; then kill "$(cat "${PID}")" 2>/dev/null || true; rm -f "${PID}"; fi
-    rm -f "${SOCK}"
+    rm -f "${SOCK}" "${TOKF}"
   `
 
   return {
@@ -112,7 +125,9 @@ export function createAdapter(sdk) {
         const why = (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join('\n')
         throw new Error(why || 'the server did not report a socket')
       }
-      return line.slice(SOCK_MARK.length)
+      const tkn = (r.stdout || '').split('\n').map(s => s.trim())
+        .find(s => s.startsWith('TOKEN='))
+      return { socket: line.slice(SOCK_MARK.length), token: tkn ? tkn.slice(6) : '' }
     },
 
     async stop() {
@@ -130,79 +145,71 @@ export function createAdapter(sdk) {
 export function createApp({ React, html, api, fw }) {
   const { useState, useEffect, useCallback, useRef } = React
 
-  return function VSCode({ setTitle }) {
-    const [url, setUrl] = useState('')
-    const [frameOk, setFrameOk] = useState(false)
+  return function VSCode({ setTitle, host }) {
     const [err, setErr] = useState('')
     const [log, setLog] = useState('')
     const [status, setStatus] = useState('starting the server…')
+    const [open, setOpen] = useState(false)
     const socket = useRef('')
 
     useEffect(() => { setTitle && setTitle('VS Code') }, [setTitle])
 
-    const boot = useCallback(async () => {
-      setErr(''); setLog(''); setUrl(''); setFrameOk(false)
+    const machine = (host || fw.host.current() || '').replace(/^.*@/, '')
+
+    const launch = useCallback(async () => {
+      setErr(''); setLog(''); setOpen(false)
       setStatus('starting the server…')
       try {
-        const path = await api.start()
+        const { socket: path, token } = await api.start()
         socket.current = path
         setStatus('forwarding the socket…')
-        // Added to the connection that is already open, so no reconnect and no
-        // second authentication — the same primitive as every other forward.
+        // Added to the connection already open — no reconnect, no second
+        // authentication. The port is derived from the forward, so the window
+        // returns to the same web origin and keeps what it saved last time.
         const local = await fw.net.forwardSocket(path)
-        // 127.0.0.1 counts as a trustworthy origin, so an http iframe inside
-        // the app is not blocked as mixed content the way any other host is.
-        setUrl(`http://127.0.0.1:${local}/`)
+        const url = `http://127.0.0.1:${local}/${token ? `?tkn=${token}` : ''}`
+        await fw.openWindow(`vscode-${host || 'default'}`, url, `VS Code — ${machine}`)
+        setOpen(true)
         setStatus('')
       } catch (e) {
         setErr(String(e))
         setStatus('')
         try { setLog(await api.log()) } catch { /* best effort */ }
       }
-    }, [])
+    }, [host, machine])
 
-    useEffect(() => { boot() }, [boot])
+    useEffect(() => { launch() }, [launch])
 
-    // A frame that cannot reach its port renders nothing, and "nothing" looks
-    // exactly like a working dark theme. If the load has not reported success
-    // shortly after the url is set, say so and show the server log rather than
-    // leaving a black rectangle to be interpreted.
-    useEffect(() => {
-      if (!url || frameOk) return
-      const t = setTimeout(async () => {
-        if (frameOk) return
-        setErr(`nothing is answering at ${url}`)
-        try { setLog(await api.log()) } catch { /* best effort */ }
-      }, 8000)
-      return () => clearTimeout(t)
-    }, [url, frameOk])
-
-    const restart = async () => {
-      try { await api.stop() } catch { /* it may already be gone */ }
+    const stop = async () => {
+      try { await api.stop() } catch { /* may already be gone */ }
       if (socket.current) {
         try { await fw.net.unforwardSocket(socket.current) } catch { /* ditto */ }
       }
-      boot()
-    }
-
-    if (url && !err) {
-      return html`
-        <iframe
-          class="vsc-frame"
-          src=${url}
-          title="VS Code"
-          onLoad=${() => setFrameOk(true)}
-          allow="clipboard-read; clipboard-write" />`
+      setOpen(false)
+      setStatus('server stopped')
     }
 
     return html`
       <div class="vsc-boot">
         ${status && html`<p class="vsc-status">${status}</p>`}
+        ${open && html`
+          <div class="vsc-panel">
+            <p class="vsc-title">VS Code is open in its own window</p>
+            <p class="vsc-note">
+              Its own window, not a panel here, so WebKit treats it as
+              first-party — which is the only way its settings, theme and
+              extensions survive a restart.
+            </p>
+            <div class="vsc-row">
+              <button class="vsc-btn" onClick=${launch}>Bring to front</button>
+              <button class="vsc-btn" onClick=${stop}>Stop server</button>
+            </div>
+          </div>`}
         ${err && html`
           <div class="vsc-err">
             <p>${err}</p>
             ${log && html`<pre class="vsc-log">${log}</pre>`}
-            <button class="vsc-btn" onClick=${restart}>try again</button>
+            <button class="vsc-btn" onClick=${launch}>try again</button>
           </div>`}
       </div>`
   }
