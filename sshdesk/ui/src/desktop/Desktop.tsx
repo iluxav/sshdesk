@@ -25,8 +25,11 @@ export function Desktop() {
   // Re-rendering on theme change keeps icon tokens live without every consumer
   // subscribing individually.
   const [themeRev, bumpTheme] = useState(0)
-  /** The desktop picture, resolved from a local path into a data URL. */
-  const [wallpaper, setWallpaper] = useState('')
+  /** Desktop pictures, one per machine, resolved from local paths. */
+  const [wallpapers, setWallpapers] = useState<Record<string, string>>({})
+  // The theme listener fires outside render, so it reads the host list from a
+  // ref rather than closing over a stale copy.
+  const hostsRef = useRef<string[]>([])
   /**
    * The focused pane. Each connected machine gets its own column, so where a
    * window *is* on screen tells you which machine it acts on — no mode to
@@ -39,6 +42,7 @@ export function Desktop() {
 
   const winsRef = useRef(state.wins)
   useEffect(() => { winsRef.current = state.wins })
+  useEffect(() => { hostsRef.current = hosts }, [hosts])
   const activeRef = useRef<string | null>(null)
   useEffect(() => { activeRef.current = active }, [active])
 
@@ -51,31 +55,36 @@ export function Desktop() {
       const cfg = await fw.config.load().catch(() => null)
       if (!live) return
       if (cfg) {
-        setConfig(cfg.values)
+        setConfig(cfg.values, cfg.machines)
         for (const w of cfg.warnings) console.warn('config:', w)
       }
-      applyTheme()
+      applyTheme(hostsRef.current)
       bumpTheme(n => n + 1)
     })()
     return () => { live = false }
   }, [])
 
   useEffect(() => onTokensChanged(() => {
-    applyTheme()
+    applyTheme(hostsRef.current)
     bumpTheme(n => n + 1)
   }), [])
 
-  // Re-read whenever the token changes. A path that no longer resolves leaves
-  // the plain background rather than a broken image.
+  // One per machine, since a machine can override the picture. Re-read
+  // whenever the theme changes; a path that no longer resolves leaves the
+  // plain background rather than a broken image.
   useEffect(() => {
-    const path = tokenValue('desk.wallpaper')
-    if (!path) { setWallpaper(''); return }
     let live = true
-    fw.wallpaper(path)
-      .then(url => { if (live) setWallpaper(url) })
-      .catch(e => { if (live) { setWallpaper(''); console.warn('wallpaper:', e) } })
+    const wanted = new Map<string, string>()
+    for (const h of hosts) {
+      const p = tokenValue('desk.wallpaper', h)
+      if (p) wanted.set(h, p)
+    }
+    if (!wanted.size) { setWallpapers({}); return }
+    Promise.all([...wanted].map(([h, p]) =>
+      fw.wallpaper(p).then(url => [h, url] as const).catch(() => [h, ''] as const)))
+      .then(pairs => { if (live) setWallpapers(Object.fromEntries(pairs)) })
     return () => { live = false }
-  }, [themeRev])
+  }, [themeRev, hosts])
 
   useEffect(() => { fw.ui._installDialogs(dlg) }, [dlg])
   useEffect(() => onPluginsChanged(() => bumpPlugins(n => n + 1)), [])
@@ -160,18 +169,6 @@ export function Desktop() {
           own pane, so a window can never drift onto another machine's half. */}
       {/* The picture sits under everything, including the menu bar, which is
           translucent so it picks the image up. */}
-      {wallpaper && (
-        <>
-          <div
-            aria-hidden
-            className="absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none"
-            style={{ backgroundImage: `url(${wallpaper})` }} />
-          {/* Over the picture, so lowering its opacity reveals more of the
-              image and raising it dims the image toward the tint colour. */}
-          <div aria-hidden className="absolute inset-0 pointer-events-none"
-               style={{ background: 'var(--color-desk-tint)' }} />
-        </>
-      )}
 
       {/* top-8 clears the menu bar; bottom-0 because the dock hides itself and
           floats over the desktop rather than reserving a strip of it. */}
@@ -182,11 +179,27 @@ export function Desktop() {
           return (
             <div
               key={h}
+              // data-host is what the generated theme hooks onto, so this
+              // machine's overrides apply to its pane and not to its neighbour.
+              data-host={h}
               onPointerDownCapture={() => setActive(h)}
+              // The pane paints the background rather than the body, so a
+              // machine can have its own — and the picture sits above it.
+              style={{ background: 'var(--color-desk-bg)' }}
               className={`relative flex-1 min-w-0 overflow-hidden transition-colors
-                          ${i > 0 ? 'border-l border-desk-line' : ''}
-                          ${focused ? 'bg-white/[0.015]' : ''}`}
+                          ${i > 0 ? 'border-l border-desk-line' : ''}`}
             >
+              {wallpapers[h] && (
+                <>
+                  <div aria-hidden
+                       className="absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none"
+                       style={{ backgroundImage: `url(${wallpapers[h]})` }} />
+                  {/* Over the picture: raising its opacity dims a bright photo
+                      until the desktop icons are legible again. */}
+                  <div aria-hidden className="absolute inset-0 pointer-events-none"
+                       style={{ background: 'var(--color-desk-tint)' }} />
+                </>
+              )}
               {hosts.length > 1 && (
                 <div className={`absolute top-0 inset-x-0 h-6 px-3 flex items-center gap-2
                                  text-[10px] pointer-events-none z-0

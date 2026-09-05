@@ -26,9 +26,27 @@ use std::collections::BTreeMap;
 
 pub type Flat = BTreeMap<String, String>;
 
+/// Per-machine overrides live under their own top-level table:
+///
+/// ```toml
+/// [theme]
+/// "desk.accent" = "#60a5fa"          # everywhere
+///
+/// [machine."iluxa@10.168.168.153".theme]
+/// "desk.accent" = "#f87171"          # that box only
+/// ```
+///
+/// They are kept apart rather than flattened into one map, because a target is
+/// full of dots — `machine.iluxa@10.168.168.153.theme.desk.accent` has no
+/// reading that says where the machine name ends.
+pub const MACHINE_TABLE: &str = "machine";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
+    /// Applies everywhere.
     pub values: Flat,
+    /// target -> the keys that machine overrides.
+    pub machines: BTreeMap<String, Flat>,
     /// Non-fatal problems worth showing rather than swallowing.
     pub warnings: Vec<String>,
 }
@@ -52,15 +70,50 @@ fn flatten(v: &toml::Value, prefix: &str, out: &mut Flat) {
 }
 
 pub fn parse(text: &str) -> Result<Flat> {
+    let (global, _) = parse_all(text)?;
+    Ok(global)
+}
+
+/// Global values and per-machine overrides, kept separate.
+pub fn parse_all(text: &str) -> Result<(Flat, BTreeMap<String, Flat>)> {
     let v: toml::Value = text.parse().map_err(|e| Error::Io(format!("bad toml: {e}")))?;
-    let mut out = Flat::new();
-    flatten(&v, "", &mut out);
-    Ok(out)
+    let mut machines: BTreeMap<String, Flat> = BTreeMap::new();
+    let mut global = Flat::new();
+
+    if let toml::Value::Table(root) = &v {
+        for (k, sub) in root {
+            if k == MACHINE_TABLE {
+                if let toml::Value::Table(per) = sub {
+                    for (target, table) in per {
+                        let mut f = Flat::new();
+                        flatten(table, "", &mut f);
+                        machines.insert(target.clone(), f);
+                    }
+                }
+            } else {
+                flatten(sub, k, &mut global);
+            }
+        }
+    }
+    Ok((global, machines))
 }
 
 /// Render back to TOML, grouping by section so a hand-editor sees something
 /// familiar rather than a wall of dotted keys.
-pub fn render(flat: &Flat) -> String {
+pub fn render(flat: &Flat) -> String { render_all(flat, &BTreeMap::new()) }
+
+/// TOML for the whole file, global values first and each machine after.
+pub fn render_all(flat: &Flat, machines: &BTreeMap<String, Flat>) -> String {
+    let mut out = render_sections(flat, "");
+    for (target, over) in machines {
+        if over.is_empty() { continue }
+        // The target is quoted as one key, so dots in an address stay inside it.
+        out.push_str(&render_sections(over, &format!("{MACHINE_TABLE}.\"{target}\".")));
+    }
+    out
+}
+
+fn render_sections(flat: &Flat, prefix: &str) -> String {
     let mut sections: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (k, v) in flat {
         let (section, leaf) = match k.rfind('.') {
@@ -69,11 +122,15 @@ pub fn render(flat: &Flat) -> String {
         };
         sections.entry(section).or_default().push((leaf, v.clone()));
     }
-    let mut out = String::from("# sshdesk configuration\n\
-                               # Written by Settings; safe to edit by hand.\n");
+    let mut out = if prefix.is_empty() {
+        String::from("# sshdesk configuration\n\
+                     # Written by Settings; safe to edit by hand.\n")
+    } else {
+        String::new()
+    };
     for (section, entries) in sections {
         if section.is_empty() { continue }
-        out.push_str(&format!("\n[{section}]\n"));
+        out.push_str(&format!("\n[{prefix}{section}]\n"));
         for (k, v) in entries {
             // Quote the key when it is not a bare identifier — icon tokens are
             // dotted, e.g. icons."files.directory".
@@ -174,27 +231,63 @@ pub fn local_path() -> std::path::PathBuf {
 }
 
 pub fn read_local(warnings: &mut Vec<String>) -> Flat {
+    read_all(warnings).0
+}
+
+pub fn read_all(warnings: &mut Vec<String>) -> (Flat, BTreeMap<String, Flat>) {
     let path = local_path();
-    let Ok(text) = std::fs::read_to_string(&path) else { return Flat::new() };
-    match parse(&text) {
-        Ok(f) => sanitize(f, "local config", warnings),
-        Err(e) => { warnings.push(format!("local config: {e}")); Flat::new() }
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return (Flat::new(), BTreeMap::new())
+    };
+    match parse_all(&text) {
+        Ok((g, m)) => (
+            sanitize(g, "config", warnings),
+            m.into_iter()
+                .map(|(t, f)| {
+                    let f = sanitize(f, &format!("config for {t}"), warnings);
+                    (t, f)
+                })
+                .filter(|(_, f)| !f.is_empty())
+                .collect(),
+        ),
+        Err(e) => { warnings.push(format!("config: {e}")); (Flat::new(), BTreeMap::new()) }
     }
 }
 
 pub fn write_local(flat: &Flat) -> Result<()> {
+    write_all(flat, &BTreeMap::new())
+}
+
+pub fn write_all(flat: &Flat, machines: &BTreeMap<String, Flat>) -> Result<()> {
     let path = local_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| Error::Io(e.to_string()))?;
     }
-    std::fs::write(&path, render(flat)).map_err(|e| Error::Io(e.to_string()))
+    std::fs::write(&path, render_all(flat, machines)).map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Everything the UI needs, in one call.
 pub fn load() -> Settings {
     let mut warnings = Vec::new();
-    let values = read_local(&mut warnings);
-    Settings { values, warnings }
+    let (values, machines) = read_all(&mut warnings);
+    Settings { values, machines, warnings }
+}
+
+/// Write one key, either globally or for one machine.
+pub fn set(key: &str, value: Option<&str>, machine: Option<&str>) -> Result<()> {
+    if let Some(v) = value { validate(key, v).map_err(Error::Io)?; }
+    let mut warnings = Vec::new();
+    let (mut global, mut machines) = read_all(&mut warnings);
+    match machine {
+        None => { match value { Some(v) => global.insert(key.into(), v.into()),
+                                None => global.remove(key) }; }
+        Some(t) => {
+            let e = machines.entry(t.to_string()).or_default();
+            match value { Some(v) => e.insert(key.into(), v.into()), None => e.remove(key) };
+            if e.is_empty() { machines.remove(t); }
+        }
+    }
+    write_all(&global, &machines)
 }
 
 #[cfg(test)]
@@ -252,5 +345,57 @@ mod tests {
         assert_eq!(clean.get("theme.accent").map(String::as_str), Some("#f00"));
         assert!(!clean.contains_key("theme.bad"));
         assert_eq!(warns.len(), 1, "{warns:?}");
+    }
+}
+
+#[cfg(test)]
+mod machine_tests {
+    use super::*;
+
+    /// The reason machines are not flattened with everything else: a target is
+    /// full of dots, so `machine.iluxa@10.168.168.153.theme.desk.accent` has no
+    /// reading that says where the machine name ends.
+    #[test]
+    fn a_dotted_target_survives_a_round_trip() {
+        let mut global = Flat::new();
+        global.insert("theme.desk.accent".into(), "#60a5fa".into());
+
+        let mut per = BTreeMap::new();
+        let mut prod = Flat::new();
+        prod.insert("theme.desk.accent".into(), "#f87171".into());
+        prod.insert("images.desk.wallpaper".into(), "/Users/me/prod.png".into());
+        per.insert("iluxa@10.168.168.153".into(), prod);
+
+        let text = render_all(&global, &per);
+        let (g, m) = parse_all(&text).expect("re-read");
+
+        assert_eq!(g.get("theme.desk.accent").map(String::as_str), Some("#60a5fa"),
+                   "global lost:\n{text}");
+        let back = m.get("iluxa@10.168.168.153").expect(&format!("machine lost:\n{text}"));
+        assert_eq!(back.get("theme.desk.accent").map(String::as_str), Some("#f87171"));
+        assert_eq!(back.get("images.desk.wallpaper").map(String::as_str),
+                   Some("/Users/me/prod.png"));
+    }
+
+    #[test]
+    fn a_machine_override_does_not_leak_into_the_global_map() {
+        let text = "[theme]\n\"desk.accent\" = \"#111111\"\n\
+                    \n[machine.\"a@b.c\".theme]\n\"desk.accent\" = \"#222222\"\n";
+        let (g, m) = parse_all(text).unwrap();
+        assert_eq!(g.get("theme.desk.accent").map(String::as_str), Some("#111111"));
+        assert_eq!(g.keys().filter(|k| k.contains("machine")).count(), 0, "{g:?}");
+        assert_eq!(m["a@b.c"].get("theme.desk.accent").map(String::as_str), Some("#222222"));
+    }
+
+    #[test]
+    fn machine_values_are_validated_like_any_other() {
+        let text = "[machine.\"a@b\".theme]\n\"desk.accent\" = \"url(https://evil/x)\"\n\
+                    \"desk.ok\" = \"#00ff00\"\n";
+        let (_, m) = parse_all(text).unwrap();
+        let mut warns = Vec::new();
+        let clean = sanitize(m["a@b"].clone(), "machine a@b", &mut warns);
+        assert!(!clean.contains_key("theme.desk.accent"), "url() survived");
+        assert_eq!(clean.get("theme.desk.ok").map(String::as_str), Some("#00ff00"));
+        assert_eq!(warns.len(), 1);
     }
 }

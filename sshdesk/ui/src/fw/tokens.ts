@@ -2,10 +2,14 @@
  * Design tokens: icons and theme values, declared by apps and overridden by
  * config.
  *
- * One config file, on the machine you are sitting at. There is no host layer:
- * it existed, and it meant a value could save successfully to a remote and
- * then have no visible effect, because the dock and menu bar resolve without a
- * host. One place, no scope to choose.
+ * One config file, on the machine you are sitting at, holding both the values
+ * that apply everywhere and any a single machine overrides.
+ *
+ * An earlier attempt put per-host config *on the host*, which failed badly: the
+ * dock and menu bar resolve without a host, so a value saved there was written
+ * successfully and then changed nothing anybody could see. Keeping every layer
+ * local fixes that — the file is one place, visible and hand-editable, and
+ * Settings states which scope each value came from.
  *
  * An app owns a namespace equal to its registered id, so there is one
  * mechanical rule and no separate name registry. A token id is
@@ -24,6 +28,15 @@ export type TokenType = 'icon' | 'color' | 'length' | 'image'
 
 export interface TokenDecl {
   type: TokenType
+  /**
+   * True when this can only be set globally.
+   *
+   * The menu bar and the dock sit outside every pane, so a per-machine value
+   * would be written successfully and change nothing — which is exactly the
+   * failure that made the first attempt at per-host config worthless. Better
+   * to say so than to let it be set.
+   */
+  global?: boolean
   /** A literal, or `@other.token` to inherit from another token. */
   default: string
   label: string
@@ -31,7 +44,7 @@ export interface TokenDecl {
 }
 
 export type TokenMap = Record<string, TokenDecl>
-export type Layer = 'default' | 'set'
+export type Layer = 'default' | 'set' | 'machine'
 
 export interface Resolved {
   value: string
@@ -44,6 +57,8 @@ type Flat = Record<string, string>
 
 const decls = new Map<string, TokenMap>()
 let values: Flat = {}
+/** target -> the keys that machine overrides. */
+let machines: Record<string, Flat> = {}
 const listeners = new Set<() => void>()
 
 /** Apps declare what they own; Settings renders whatever is declared. */
@@ -68,13 +83,19 @@ export function configKey(id: string, type: TokenType): string {
   return section + id
 }
 
-export function setConfig(next: Flat) {
+export function setConfig(next: Flat, per: Record<string, Flat> = {}) {
   values = next ?? {}
+  machines = per ?? {}
   notify()
 }
 
 /** The stored values, so the UI can tell "set" from "default". */
 export function config(): Flat { return values }
+
+/** What one machine overrides. */
+export function machineConfig(host?: string): Flat {
+  return (host && machines[host]) || {}
+}
 
 /**
  * Update one key in memory without a round trip.
@@ -83,9 +104,10 @@ export function config(): Flat { return values }
  * UI could say "saved" and still show the old value. Applying the known value
  * directly makes the update deterministic; the re-read only confirms it.
  */
-export function setValue(key: string, value?: string) {
-  if (value === undefined) delete values[key]
-  else values[key] = value
+export function setValue(key: string, value?: string, host?: string) {
+  const target = host ? (machines[host] ??= {}) : values
+  if (value === undefined) delete target[key]
+  else target[key] = value
   notify()
 }
 
@@ -97,13 +119,15 @@ export function setValue(key: string, value?: string) {
  * action — you change one app's icon and three others move for reasons nothing
  * in the config explains. A reference is greppable and Settings can show it.
  */
-export function resolve(id: string, seen = new Set<string>()): Resolved {
+export function resolve(id: string, host?: string, seen = new Set<string>()): Resolved {
   const decl = declOf(id)
   if (!decl) return { value: '', layer: 'default' }
 
   const key = configKey(id, decl.type)
-  let value: string | undefined = values[key]
-  let layer: Layer = 'set'
+  // This machine, then everywhere, then the declared default.
+  let value: string | undefined = host ? machines[host]?.[key] : undefined
+  let layer: Layer = 'machine'
+  if (value === undefined) { value = values[key]; layer = 'set' }
   if (value === undefined) { value = decl.default; layer = 'default' }
 
   if (value?.startsWith('@')) {
@@ -114,14 +138,14 @@ export function resolve(id: string, seen = new Set<string>()): Resolved {
       return { value: '', layer }
     }
     seen.add(id)
-    const inner = resolve(target, seen)
+    const inner = resolve(target, host, seen)
     return { value: inner.value, layer: inner.layer, via: target }
   }
   return { value: value ?? '', layer }
 }
 
-export function value(id: string): string {
-  return resolve(id).value
+export function value(id: string, host?: string): string {
+  return resolve(id, host).value
 }
 
 export function onTokensChanged(fn: () => void) {

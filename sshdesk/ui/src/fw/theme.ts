@@ -5,9 +5,11 @@
  * re-render: the browser recalculates style, which is what it is good at.
  *
  * Global tokens land on :root and an app's on `.app-<id>`, so one app can be
- * restyled without touching anything else.
+ * restyled without touching anything else. A machine's overrides land on
+ * `[data-host="…"]`, which every window and every pane carries — so they reach
+ * that machine's things and nothing else.
  */
-import { declarations, resolve, type TokenType } from './tokens'
+import { declarations, resolve, machineConfig, configKey, type TokenType } from './tokens'
 
 const STYLE_ID = 'sshdesk-theme'
 
@@ -30,7 +32,7 @@ function themeTokens(): Array<[string, string, TokenType]> {
   return out
 }
 
-export function buildCss(): string {
+export function buildCss(hosts: string[] = []): string {
   const root: string[] = []
   const perApp = new Map<string, string[]>()
 
@@ -50,15 +52,32 @@ export function buildCss(): string {
   for (const [appId, decls] of perApp) {
     css += `.app-${appId} {\n  ${decls.join('\n  ')}\n}\n`
   }
+
+  // Only the keys a machine actually overrides, so a host block stays small
+  // and it is obvious in devtools what that machine changed.
+  for (const host of hosts) {
+    const over = machineConfig(host)
+    const lines: string[] = []
+    for (const [appId, name, type] of themeTokens()) {
+      const v = over[configKey(`${appId}.${name}`, type)]
+      if (v) lines.push(`${cssVar(appId, name)}: ${v};`)
+    }
+    if (lines.length) css += `[data-host="${cssEscape(host)}"] {\n  ${lines.join('\n  ')}\n}\n`
+  }
   return css
 }
 
-export function applyTheme() {
+/** Host names come from the user, so they are escaped before entering a selector. */
+function cssEscape(s: string): string {
+  return s.replace(/["\\]/g, '\\$&')
+}
+
+export function applyTheme(hosts: string[] = []) {
   let el = document.getElementById(STYLE_ID)
   if (!el) {
     el = document.createElement('style')
     el.id = STYLE_ID
     document.head.appendChild(el)
   }
-  el.textContent = buildCss()
+  el.textContent = buildCss(hosts)
 }

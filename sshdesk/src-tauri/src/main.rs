@@ -314,15 +314,13 @@ fn config_load() -> sshdesk_core::config::Settings {
 ///
 /// Validation lives here rather than in the UI so a hand-edited file and the
 /// Settings app get identical treatment.
+/// `machine` scopes the write to one target; without it the value applies
+/// everywhere. Both live in the same file on this Mac.
 #[tauri::command]
-fn config_set(key: String, value: Option<String>) -> Result<(), String> {
-    if let Some(v) = &value {
-        sshdesk_core::config::validate(&key, v)?;
-    }
-    let mut warnings = Vec::new();
-    let mut flat = sshdesk_core::config::read_local(&mut warnings);
-    match value { Some(v) => flat.insert(key, v), None => flat.remove(&key) };
-    sshdesk_core::config::write_local(&flat).map_err(|e| e.to_string())
+fn config_set(key: String, value: Option<String>, machine: Option<String>)
+    -> Result<(), String> {
+    sshdesk_core::config::set(&key, value.as_deref(), machine.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// Where the file lives, so the UI can offer to open it in the Editor.

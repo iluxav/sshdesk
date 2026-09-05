@@ -219,9 +219,17 @@ function makeApi(getHost: () => string) {
    * Configuration: one file on this Mac. Defaults live in app declarations.
    */
   config: {
-    load: () => invoke<{ values: Record<string, string>; warnings: string[] }>('config_load'),
-    /** Write one key. Passing no value removes it, falling back to the default. */
-    set: (key: string, value?: string) => invoke<void>('config_set', { key, value }),
+    load: () => invoke<{
+      values: Record<string, string>
+      machines: Record<string, Record<string, string>>
+      warnings: string[]
+    }>('config_load'),
+    /**
+     * Write one key. No value removes it; `machine` scopes it to one target
+     * rather than everywhere. Both end up in the same file on this Mac.
+     */
+    set: (key: string, value?: string, machine?: string) =>
+      invoke<void>('config_set', { key, value, machine }),
     /** Where the file lives, so it can be opened in the Editor. */
     path: () => invoke<string>('config_path'),
   },
@@ -315,6 +323,41 @@ function makeApi(getHost: () => string) {
     },
     set(key: string, value: unknown) {
       try { localStorage.setItem('sshdesk:' + key, JSON.stringify(value)) } catch { /* quota */ }
+    },
+
+    /**
+     * The same store, scoped to one machine.
+     *
+     * Anything shaped like a path belongs here. A pinned folder, a last-opened
+     * directory, a port mapping — none of them mean anything on a different
+     * box, and sharing them across machines is not a convenience, it is a
+     * wrong answer that looks like a right one.
+     *
+     * `seed` migrates a value that used to be global, so nobody loses what
+     * they had the first time a preference becomes per-machine.
+     */
+    hostGet<T>(key: string, fallback: T, seed?: string): T {
+      const scoped = `host:${getHost()}:${key}`
+      const raw = localStorage.getItem('sshdesk:' + scoped)
+      if (raw !== null) {
+        try { return JSON.parse(raw) as T } catch { return fallback }
+      }
+      if (seed) {
+        const old = localStorage.getItem('sshdesk:' + seed)
+        if (old !== null) {
+          try {
+            const v = JSON.parse(old) as T
+            localStorage.setItem('sshdesk:' + scoped, old)
+            return v
+          } catch { /* fall through */ }
+        }
+      }
+      return fallback
+    },
+    hostSet(key: string, value: unknown) {
+      try {
+        localStorage.setItem(`sshdesk:host:${getHost()}:${key}`, JSON.stringify(value))
+      } catch { /* quota */ }
     },
   },
 

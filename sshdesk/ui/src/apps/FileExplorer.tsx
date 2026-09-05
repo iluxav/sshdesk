@@ -34,8 +34,11 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
   const dropId = `files:${selfId}`
   const { drag, start: startDrag } = useDrag()
   const dlg = useDialog()
+  // Per machine: these are paths, and a path on one box is not a path on
+  // another. The third argument migrates whatever was pinned back when this
+  // was shared, so nobody loses their shortcuts to the fix.
   const [shortcuts, setShortcuts] = useState<Shortcut[]>(
-    () => fw.prefs.get('files.shortcuts', DEFAULT_SHORTCUTS))
+    () => fw.prefs.hostGet('files.shortcuts', DEFAULT_SHORTCUTS, 'files.shortcuts'))
   const cwdRef = useRef('~')
   const scroller = useRef<HTMLDivElement>(null)
   const anchor = useRef<string | null>(null)
@@ -65,7 +68,7 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load('~') }, [])
 
-  useEffect(() => { fw.prefs.set('files.shortcuts', shortcuts) }, [shortcuts])
+  useEffect(() => { fw.prefs.hostSet('files.shortcuts', shortcuts) }, [shortcuts])
 
   // One handler per window; the destination arrives as `arg` from the element.
   useDropTarget(dropId, (payload, { meta, arg }) => transfer(payload.paths, arg, meta))
