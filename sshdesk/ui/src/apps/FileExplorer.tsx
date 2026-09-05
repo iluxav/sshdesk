@@ -492,7 +492,7 @@ export function FileExplorer({ setTitle }: { setTitle?: (t: string) => void }) {
                   <Icon
                     token={e.kind === 'dir' ? 'files.directory'
                          : e.kind === 'link' ? 'files.link' : 'files.file'}
-                    size={15} />
+                    host={fw.host.current()} size={15} />
                 </span>
                 {/* Colour comes from a token that defaults to @desk.accent, so
                     retinting the desktop moves folder names with it — and

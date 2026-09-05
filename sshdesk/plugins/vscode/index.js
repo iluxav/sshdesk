@@ -25,7 +25,7 @@ const REL = `https://github.com/gitpod-io/openvscode-server/releases/download/op
 export const manifest = {
   id: 'vscode',
   name: 'VS Code',
-  icon: '🧑‍💻',
+  icon: 'lucide:code-xml',
   window: { w: 1180, h: 780 },
 
   requires: [{
@@ -45,9 +45,6 @@ export const manifest = {
     bin: 'bin/openvscode-server',
   }],
 
-  tokens: {
-    app: { type: 'icon', default: 'lucide:code-xml', label: 'App icon' },
-  },
 }
 
 const OPT = '$HOME/.sshdesk/opt'

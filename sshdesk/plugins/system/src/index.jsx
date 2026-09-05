@@ -10,7 +10,7 @@ export { createAdapter } from './adapter.js'
 export const manifest = {
   id: 'system',
   name: 'System',
-  icon: '📊',
+  icon: 'desk:cpu',
   window: { w: 1000, h: 640 },
 }
 

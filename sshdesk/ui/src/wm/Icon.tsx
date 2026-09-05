@@ -9,18 +9,26 @@ import { value as tokenValue } from '../fw/tokens'
  * codebase and every plugin manifest, so each can become a token when it is
  * convenient rather than in one sweeping commit that inevitably misses some.
  */
-export function Icon({ token, id, size = 16, className, title, fallback }: {
+export function Icon({ token, id, host, size = 16, className, title, fallback }: {
   /** Token id, e.g. `files.directory`. */
   token?: string
   /** Literal value, e.g. `desk:folder` or an emoji. Wins over `token`. */
   id?: string
+  /**
+   * Which machine's configuration to read.
+   *
+   * Colours reach a machine through a [data-host] CSS block, but an icon is
+   * chosen in JavaScript, so it has to be asked for by name. Without this a
+   * per-machine icon is written to the config and never drawn.
+   */
+  host?: string
   size?: number
   className?: string
   title?: string
   /** Drawn when the token resolves to nothing. */
   fallback?: string
 }) {
-  const v = id ?? (token ? tokenValue(token) : '') ?? ''
+  const v = id ?? (token ? tokenValue(token, host) : '') ?? ''
   // An undeclared or unresolved token must still draw something. Rendering
   // nothing is how the dock ended up with blank slots for plugins.
   const shown = v || fallback || ''

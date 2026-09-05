@@ -130,7 +130,7 @@ function createAdapter(sdk) {
 var manifest = {
   id: "system",
   name: "System",
-  icon: "\u{1F4CA}",
+  icon: "desk:cpu",
   window: { w: 1e3, h: 640 }
 };
 var gb = (b) => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(0)} MB` : `${(b / 1e3).toFixed(0)} KB`;

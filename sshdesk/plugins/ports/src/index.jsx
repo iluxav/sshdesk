@@ -14,7 +14,7 @@
 export const manifest = {
   id: 'ports',
   name: 'Ports',
-  icon: '🔌',
+  icon: 'lucide:ethernet-port',
   window: { w: 940, h: 520 },
 }
 

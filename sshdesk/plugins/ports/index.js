@@ -2,7 +2,7 @@
 var manifest = {
   id: "ports",
   name: "Ports",
-  icon: "\u{1F50C}",
+  icon: "lucide:ethernet-port",
   window: { w: 940, h: 520 }
 };
 function createAdapter(sdk) {

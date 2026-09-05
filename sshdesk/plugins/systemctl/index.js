@@ -13,7 +13,7 @@
 export const manifest = {
   id: 'systemctl',
   name: 'Services',
-  icon: '⚙️',
+  icon: 'desk:service',
   window: { w: 940, h: 580 },
 }
 

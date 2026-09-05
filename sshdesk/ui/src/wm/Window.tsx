@@ -129,7 +129,7 @@ export function Window({ win, children }: { win: Win; children: ReactNode }) {
             className="w-3 h-3 rounded-full bg-desk-ok/90 hover:bg-desk-ok" />
         </div>
         <span className="opacity-70 flex items-center">
-          <Icon token={`${win.appId}.app`} fallback={win.icon} size={13} />
+          <Icon token={`${win.appId}.app`} host={win.host} fallback={win.icon} size={13} />
         </span>
         <span className="text-xs font-medium truncate">{win.title}</span>
         <span className="ml-auto pl-2 text-[10px] text-desk-dim truncate max-w-[40%]">

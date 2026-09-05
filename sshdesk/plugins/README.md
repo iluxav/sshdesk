@@ -30,7 +30,7 @@ identity changes.
 export const manifest = {
   id: 'ports',                    // unique; also the app id and token namespace
   name: 'Ports',                  // dock label and window title
-  icon: '🔌',                     // fallback glyph, before icon packs load
+  icon: 'lucide:ethernet-port',   // a pack icon, or an emoji — both work
   window: { w: 940, h: 520 },     // optional initial size
 
   // What this plugin needs on the remote. Checked when a window opens; the
@@ -129,6 +129,24 @@ command. Validate anything that came from the machine before passing it back:
 const UNIT = /^[A-Za-z0-9@._:-]+$/
 if (!UNIT.test(name)) throw new Error(`refusing suspicious unit: ${name}`)
 ```
+
+### Your app icon
+
+`manifest.icon` takes either a pack id or a glyph:
+
+```js
+icon: 'lucide:ethernet-port'   // from the bundled Lucide set, 2000+ icons
+icon: 'desk:service'           // from the small curated set
+icon: '🔌'                      // still fine
+```
+
+A pack icon inherits the desktop's colours and stays sharp at any size; an
+emoji does neither, and looks like an emoji sitting in a row of line icons.
+Search the sets in Settings — any icon row opens a picker.
+
+Whatever you put here becomes the default for your `<id>.app` token, so a user
+can change it in Settings without touching your plugin. That is the whole
+mechanism; you do not need to declare the token yourself.
 
 ### Tokens: icons and colours
 

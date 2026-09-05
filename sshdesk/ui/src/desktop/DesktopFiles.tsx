@@ -160,7 +160,8 @@ export function DesktopFiles({ host, active }: { host: string; active: boolean }
                       ${sel === e.name ? 'bg-[var(--color-desk-selection)]' : 'hover:bg-white/5'}`}
         >
           <Icon token={e.kind === 'dir' ? 'files.directory'
-                     : e.kind === 'link' ? 'files.link' : 'files.file'} size={34} />
+                     : e.kind === 'link' ? 'files.link' : 'files.file'}
+                host={host} size={34} />
           <span className="text-[11px] leading-tight line-clamp-2 break-all
                            text-desk-fg/90 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
             {e.name}

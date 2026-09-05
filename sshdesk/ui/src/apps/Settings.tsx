@@ -142,7 +142,7 @@ export function Settings({ setTitle }: { setTitle?: (t: string) => void }) {
             onClick={() => setSection(id)}
             className={`flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs
               ${section === id ? 'bg-desk-accent/15 text-desk-fg' : 'text-desk-dim hover:bg-white/5'}`}>
-            <Icon token={`${id}.app`} size={14} />
+            <Icon token={`${id}.app`} host={host} size={14} />
             <span className="truncate">{titleOf(id)}</span>
             <span className="ml-auto text-[10px] opacity-50">{Object.keys(decls).length}</span>
           </button>
