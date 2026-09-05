@@ -776,8 +776,8 @@ fn forward_socket(
     // includes the port — so a fresh port every launch means fresh localStorage
     // and IndexedDB, and anything the page remembered is gone. VS Code keeps a
     // good deal of its state there, which is why its settings reset on every
-    // reconnect. Same rule sshloop uses for exactly this reason: a stable hash
-    // so a bookmark, and a browser's memory, survive a reconnect.
+    // reconnect. So the port is a stable hash of the forward instead, and a
+    // bookmark — or a browser's memory of the site — survives a reconnect.
     let local = free_port(local_port.unwrap_or_else(|| stable_port(&key)));
     if local == 0 { return Err("no free local port".into()) }
     let map = hosts.0.lock().map_err(|e| e.to_string())?;

@@ -99,6 +99,6 @@ remote. Actions are whitelisted.
 - Password is held in the UI and passed per action. Real version wants a cached sudo
   timestamp or an askpass helper.
 - No streaming yet — refresh is manual. A remote watcher loop pushing changes down one
-  channel costs zero round trips (see `../sshloop`).
+  channel costs zero round trips.
 - One host at a time in the UI; the backend already keys by target and holds many.
 - UI is a spike, not a design. The desktop shell is yours to build.
