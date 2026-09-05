@@ -13,17 +13,19 @@ on:
 
 jobs:
   build:
-    # Two runners because there is no cross-compilation here: an Apple Silicon
-    # build needs an Apple Silicon runner, and Intel needs an Intel one.
+    # Both builds come from Apple Silicon runners, which cross-compile to Intel
+    # perfectly well. The obvious alternative — an Intel runner for the Intel
+    # build — means queueing for the macos-13 pool, which is being retired and
+    # left a job unassigned for a quarter of an hour on the first release.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
-            arch: aarch64
-          - runner: macos-13
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+          - arch: aarch64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -34,11 +36,13 @@ jobs:
           cache-dependency-path: sshdesk/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: sshdesk/src-tauri -> target
-          key: ${{ matrix.arch }}
+          key: ${{ matrix.target }}
 
       # Cached with the toolchain, so this is only slow the first time.
       - name: Install the Tauri CLI
@@ -62,11 +66,12 @@ jobs:
 
       - name: Build
         working-directory: sshdesk/src-tauri
-        run: cargo tauri build
+        run: cargo tauri build --target ${{ matrix.target }}
 
+      # A --target build nests the output under the triple.
       - name: Package
         id: package
-        working-directory: sshdesk/src-tauri/target/release/bundle/macos
+        working-directory: sshdesk/src-tauri/target/${{ matrix.target }}/release/bundle/macos
         run: |
           TAG="${GITHUB_REF_NAME}"
           # An `if` rather than `[ … ] && …`: that form survives `set -e` only
