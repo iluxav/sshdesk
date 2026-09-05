@@ -2,7 +2,7 @@
 #
 # sshdesk installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/iluxav/sshdesk/main/install.sh | sh
 #
 # Why this exists rather than a .dmg: the app is not notarised, and macOS
 # quarantines anything a *browser* downloads, so a downloaded .dmg would be
