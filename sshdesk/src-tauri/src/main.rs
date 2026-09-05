@@ -681,49 +681,75 @@ fn exec(
 #[derive(Serialize)]
 struct Plugin { name: String, dir: String, source: String, style: Option<String> }
 
-/// Where plugins live. Convention: <root>/<name>/index.js
+/// Everywhere plugins can live, lowest precedence first.
 ///
-/// Hardcoded to the repo's ./plugins during development so edits are picked up
-/// on reload; falls back to ~/.sshdesk/plugins, which is the shipping location.
-fn plugins_root() -> std::path::PathBuf {
+/// The old version resolved a single directory from CARGO_MANIFEST_DIR, which
+/// is baked in at *compile* time. In a release build that path points at the CI
+/// runner's checkout, so an installed app looked for plugins somewhere that has
+/// never existed on the user's machine and silently found none.
+///
+/// Now there are three, and a later one shadows an earlier one by plugin id:
+///
+///   1. inside the app bundle — the plugins that ship with sshdesk
+///   2. ~/.sshdesk/plugins    — what the user installs, so their copy wins
+///   3. $SSHDESK_PLUGINS      — an explicit override, used by `make run`
+fn plugin_roots(app: &tauri::AppHandle) -> Vec<std::path::PathBuf> {
+    use tauri::Manager;
+    let mut roots = Vec::new();
+
+    // Tauri writes `../plugins` resources under a `_up_` segment.
+    if let Ok(res) = app.path().resource_dir() {
+        for candidate in [res.join("_up_").join("plugins"), res.join("plugins")] {
+            if candidate.is_dir() { roots.push(candidate); break }
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let user = std::path::Path::new(&home).join(".sshdesk/plugins");
+        if user.is_dir() { roots.push(user) }
+    }
+
     if let Ok(p) = std::env::var("SSHDESK_PLUGINS") {
-        return std::path::PathBuf::from(p);
+        let dev = std::path::PathBuf::from(p);
+        if dev.is_dir() { roots.push(dev) }
     }
-    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("plugins"));
-    match dev {
-        Some(d) if d.is_dir() => d,
-        _ => std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join(".sshdesk/plugins"),
-    }
+
+    roots
 }
 
 #[tauri::command]
-fn list_plugins() -> Result<Vec<Plugin>, String> {
-    let root = plugins_root();
-    let mut out = Vec::new();
-    let entries = match std::fs::read_dir(&root) {
-        Ok(e) => e,
-        Err(_) => return Ok(out),          // no plugins dir is not an error
-    };
-    for e in entries.flatten() {
-        let dir = e.path();
-        if !dir.is_dir() { continue; }
-        let index = dir.join("index.js");
-        if !index.is_file() { continue; }
-        match std::fs::read_to_string(&index) {
-            Ok(source) => out.push(Plugin {
-                name: dir.file_name().unwrap_or_default().to_string_lossy().to_string(),
-                dir: dir.to_string_lossy().to_string(),
-                source,
-                style: std::fs::read_to_string(dir.join("style.css")).ok(),
-            }),
-            Err(err) => eprintln!("sshdesk: cannot read {}: {err}", index.display()),
+fn list_plugins(app: tauri::AppHandle) -> Result<Vec<Plugin>, String> {
+    // Keyed by plugin id so a later root replaces an earlier one wholesale,
+    // rather than the same plugin appearing twice in the dock.
+    let mut found: std::collections::BTreeMap<String, Plugin> = Default::default();
+
+    let roots = plugin_roots(&app);
+    let roots_seen = roots.len();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else { continue };
+        for e in entries.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() { continue }
+            let index = dir.join("index.js");
+            if !index.is_file() { continue }
+            let name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
+            match std::fs::read_to_string(&index) {
+                Ok(source) => { found.insert(name.clone(), Plugin {
+                    name,
+                    dir: dir.to_string_lossy().to_string(),
+                    source,
+                    style: std::fs::read_to_string(dir.join("style.css")).ok(),
+                }); }
+                Err(err) => eprintln!("sshdesk: cannot read {}: {err}", index.display()),
+            }
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    // "where did my plugins go" was only answerable by reading this function,
+    // so it says what it looked at and what it found.
+    eprintln!("sshdesk: {} plugin(s) from {} root(s): {}",
+        found.len(), roots_seen,
+        found.values().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+    Ok(found.into_values().collect())
 }
 
 /// Add a local forward for `remote_port`.

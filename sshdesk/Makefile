@@ -12,9 +12,13 @@ HOST    ?= iluxa@10.168.168.226
 all: run
 
 ## run: rebuild (UI + Rust) and launch the app
+#
+# SSHDESK_PLUGINS points at the repo so edits here are picked up. A release
+# build reads the plugins bundled inside the .app instead; a bare `cargo tauri
+# build --no-bundle` binary has none, which is why this is needed.
 run: kill build
 	@echo "→ launching sshdesk"
-	@$(BIN) > /tmp/sshdesk.log 2>&1 &
+	@SSHDESK_PLUGINS=$(PWD)/plugins $(BIN) > /tmp/sshdesk.log 2>&1 &
 	@sleep 2
 	@pgrep -f 'release/sshdesk$$' >/dev/null \
 		&& echo "✓ running — check your screen" \
@@ -63,7 +67,7 @@ ui-install:
 
 ## dev: hot reload (vite + tauri). Edit .tsx and it updates instantly. Opens devtools.
 dev: kill
-	@cd src-tauri && cargo tauri dev
+	@cd src-tauri && SSHDESK_PLUGINS=$(PWD)/../plugins cargo tauri dev
 
 ## probe: run the headless verification harness against $(HOST)
 probe:
@@ -78,7 +82,7 @@ probe-sudo:
 
 ## restart: kill and relaunch without rebuilding
 restart: kill
-	@$(BIN) > /tmp/sshdesk.log 2>&1 &
+	@SSHDESK_PLUGINS=$(PWD)/plugins $(BIN) > /tmp/sshdesk.log 2>&1 &
 	@sleep 2 && echo "✓ relaunched"
 
 ## kill: stop any running instance
